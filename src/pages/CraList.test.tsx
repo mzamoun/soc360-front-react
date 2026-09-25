@@ -1,0 +1,411 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { MemoryRouter } from 'react-router-dom'
+import { ApiError } from '../api/client'
+import { CraList } from './CraList'
+import { DialogHost } from '../components/dialog'
+import type { CraDto, UserDto } from '../api/types'
+
+const {
+  findByConsultantMock,
+  findBySocYearMock,
+  findByManagerMock,
+  findAllYearMock,
+  getOrCreateMock,
+  getByIdMock,
+  validateMock,
+  rejectMock,
+  deleteMock,
+  historyMock,
+  filterListMock,
+  userMock,
+} = vi.hoisted(() => ({
+  findByConsultantMock: vi.fn().mockResolvedValue([]),
+  findBySocYearMock: vi.fn(),
+  findByManagerMock: vi.fn(),
+  findAllYearMock: vi.fn(),
+  getOrCreateMock: vi.fn(),
+  getByIdMock: vi.fn(),
+  validateMock: vi.fn(),
+  rejectMock: vi.fn(),
+  deleteMock: vi.fn(),
+  historyMock: vi.fn(),
+  filterListMock: vi.fn().mockResolvedValue([]),
+  userMock: { value: null as unknown as UserDto },
+}))
+
+vi.mock('../auth/AuthContext', () => ({
+  useAuth: () => ({
+    user: userMock.value,
+    initializing: false,
+    login: vi.fn(),
+    logout: vi.fn(),
+    setUser: vi.fn(),
+    refreshMe: vi.fn(),
+  }),
+}))
+
+vi.mock('../api/activities', () => ({
+  activitiesApi: {
+    findAll: vi.fn().mockResolvedValue([]),
+  },
+}))
+
+vi.mock('../api/cras', () => ({
+  crasApi: {
+    getOrCreate: getOrCreateMock,
+    getById: getByIdMock,
+    findByConsultant: findByConsultantMock,
+    findBySocYear: findBySocYearMock,
+    findByManager: findByManagerMock,
+    findAllYear: findAllYearMock,
+    save: vi.fn(),
+    submit: vi.fn(),
+    validate: validateMock,
+    reject: rejectMock,
+    delete: deleteMock,
+    exchanges: vi.fn(),
+    history: historyMock,
+  },
+}))
+
+vi.mock('../api/holidays', () => ({
+  holidaysApi: {
+    findByCountryYear: vi.fn().mockResolvedValue([]),
+  },
+}))
+
+vi.mock('../api/socHolidays', () => ({
+  socHolidaysApi: {
+    list: vi.fn().mockResolvedValue([]),
+  },
+}))
+
+vi.mock('../api/consultants', () => ({
+  consultantsApi: { filterList: filterListMock },
+}))
+
+const managerUser = {
+  id: 1,
+  username: 'manager',
+  email: 'manager@soc.fr',
+  firstName: 'M',
+  lastName: 'Manager',
+  phone: null,
+  role: 'MANAGER',
+  active: true,
+  socId: 5,
+  socName: 'SOC Test',
+  consultantId: null,
+  mustChangePassword: false,
+  lastLoginAt: null,
+} as UserDto
+
+const consultantUser = {
+  ...managerUser,
+  id: 2,
+  role: 'CONSULTANT',
+  socId: null,
+  socName: null,
+  consultantId: 10,
+} as UserDto
+
+const responsibleUser = {
+  ...managerUser,
+  id: 3,
+  role: 'RESPONSIBLE_SOC',
+} as UserDto
+
+const managerWithManagerUser = {
+  ...managerUser,
+  id: 1,
+  manager: {
+    id: 9,
+    fullName: 'Top Manager',
+    username: 'top',
+    email: 'top@soc.fr',
+    phone: null,
+    role: 'RESPONSIBLE_SOC',
+  },
+} as UserDto
+
+const adminUser = {
+  ...managerUser,
+  id: 4,
+  role: 'ADMIN',
+} as UserDto
+
+const cra = (overrides: Partial<CraDto> = {}): CraDto => ({
+  id: 1,
+  consultantId: 10,
+  consultantName: 'Alice Martin',
+  managerId: 1,
+  month: 8,
+  year: 2026,
+  type: 'CRA',
+  status: 'SUBMITTED',
+  totalWorkedDays: 21,
+  totalHours: 151.5,
+  submittedAt: null,
+  validatedAt: null,
+  comment: null,
+  days: [],
+  ...overrides,
+})
+
+function stubFixedNow() {
+  const RealDate = Date
+  const fixed = new RealDate(2026, 7, 15, 12, 0, 0)
+  vi.stubGlobal(
+    'Date',
+    class extends RealDate {
+      constructor() {
+        super(fixed.getTime())
+      }
+      static now() {
+        return RealDate.now()
+      }
+    },
+  )
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals()
+  vi.clearAllMocks()
+  userMock.value = null as unknown as UserDto
+})
+
+function renderList() {
+  return render(
+    <MemoryRouter initialEntries={['/cras']}>
+      <CraList />
+      <DialogHost />
+    </MemoryRouter>,
+  )
+}
+
+describe('CraList', () => {
+  it('affiche les CRA de l’équipe du manager', async () => {
+    userMock.value = managerUser
+    findByManagerMock.mockResolvedValue([
+      cra(),
+      cra({ id: 2, consultantName: 'Bob Dupont', month: 7 }),
+    ])
+
+    renderList()
+
+    expect(await screen.findByText('Alice Martin')).toBeInTheDocument()
+    expect(findByManagerMock).toHaveBeenCalledWith(2026)
+    expect(screen.getAllByText('Soumis').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('21 j').length).toBeGreaterThan(0)
+    expect(screen.getByText('Bob Dupont')).toBeInTheDocument()
+  })
+
+  it('valide un CRA soumis', async () => {
+    userMock.value = managerUser
+    findByManagerMock.mockResolvedValue([cra()])
+    validateMock.mockResolvedValue(cra({ status: 'VALIDATED' }))
+
+    renderList()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Valider' }))
+
+    await waitFor(() => expect(validateMock).toHaveBeenCalledWith(1))
+  })
+
+  it('rejette un CRA avec le motif saisi', async () => {
+    userMock.value = managerUser
+    findByManagerMock.mockResolvedValue([cra()])
+    rejectMock.mockResolvedValue(cra({ status: 'REJECTED' }))
+
+    renderList()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Rejeter' }))
+
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByRole('textbox'), {
+      target: { value: 'Facture en double' },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Confirmer' }))
+
+    await waitFor(() => expect(rejectMock).toHaveBeenCalledWith(1, 'Facture en double'))
+  })
+
+  it('supprime un CRA non soumis et n’affiche pas l’action pour un CRA soumis', async () => {
+    userMock.value = managerUser
+    findByManagerMock.mockResolvedValue([
+      cra({ status: 'DRAFT', consultantName: 'Carla Draft' }),
+      cra({ id: 2, consultantName: 'Bob Soumis', status: 'SUBMITTED' }),
+    ])
+    deleteMock.mockResolvedValue(undefined)
+
+    renderList()
+
+    await screen.findByText('Carla Draft')
+
+    expect(screen.getByRole('button', { name: 'Éditer' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ouvrir' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Supprimer' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Supprimer' }))
+
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Supprimer' }))
+
+    await waitFor(() => expect(deleteMock).toHaveBeenCalledWith(1))
+  })
+
+  it('affiche l’état vide et crée le CRA du mois pour un consultant', async () => {
+    userMock.value = consultantUser
+    findByConsultantMock.mockResolvedValue([])
+    getOrCreateMock.mockResolvedValue(cra({ id: 99 }))
+    getByIdMock.mockResolvedValue(cra({ id: 99 }))
+    stubFixedNow()
+
+    renderList()
+
+    expect(await screen.findByText('Aucun CRA pour cette année')).toBeInTheDocument()
+    expect(findByConsultantMock).toHaveBeenCalledWith(10, 2026)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Nouveau Cra' }))
+
+    await waitFor(() => expect(getOrCreateMock).toHaveBeenCalledWith(10, 2026, 8, 'CRA'))
+  })
+
+  it('affiche tous les CRA de l’année pour un consultant sans action de validation', async () => {
+    userMock.value = consultantUser
+    findByConsultantMock.mockResolvedValue([
+      cra(),
+      cra({ id: 2, consultantName: 'Bob Dupont', month: 7 }),
+    ])
+
+    renderList()
+
+    expect(await screen.findByText('Alice Martin')).toBeInTheDocument()
+    expect(screen.getByText('Bob Dupont')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Valider' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Rejeter' })).not.toBeInTheDocument()
+  })
+
+  it('affiche l’erreur API dans un bloc d’erreur', async () => {
+    userMock.value = managerUser
+    findByManagerMock.mockRejectedValue(new ApiError(500, 'Erreur serveur'))
+
+    renderList()
+
+    expect(await screen.findByText('Erreur serveur')).toBeInTheDocument()
+  })
+
+  it('affiche les CRA de toute la société pour un responsable', async () => {
+    userMock.value = responsibleUser
+    findBySocYearMock.mockResolvedValue([cra({ consultantName: 'Alice Martin' })])
+
+    renderList()
+
+    expect(await screen.findByText('Alice Martin')).toBeInTheDocument()
+    expect(findBySocYearMock).toHaveBeenCalledWith(5, 2026)
+    expect(findByManagerMock).not.toHaveBeenCalled()
+    expect(findAllYearMock).not.toHaveBeenCalled()
+  })
+
+  it('affiche les CRA de tous les consultants pour un admin', async () => {
+    userMock.value = adminUser
+    findAllYearMock.mockResolvedValue([
+      cra({ consultantName: 'Alice Martin' }),
+      cra({ id: 2, consultantName: 'Bob Dupont', month: 7 }),
+    ])
+
+    renderList()
+
+    expect(await screen.findByText('Alice Martin')).toBeInTheDocument()
+    expect(screen.getByText('Bob Dupont')).toBeInTheDocument()
+    expect(findAllYearMock).toHaveBeenCalledWith(2026)
+    expect(findBySocYearMock).not.toHaveBeenCalled()
+    expect(findByManagerMock).not.toHaveBeenCalled()
+  })
+
+  it('permet à un manager rattaché à un manager de créer son propre CRA', async () => {
+    userMock.value = managerWithManagerUser
+    findByManagerMock.mockResolvedValue([])
+    findByConsultantMock.mockResolvedValue([])
+    getOrCreateMock.mockResolvedValue(cra({ id: 99 }))
+    getByIdMock.mockResolvedValue(cra({ id: 99 }))
+    stubFixedNow()
+
+    renderList()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Nouveau Cra' }))
+
+    await waitFor(() => expect(getOrCreateMock).toHaveBeenCalledWith(1, 2026, 8, 'CRA'))
+    expect(findByConsultantMock).toHaveBeenCalledWith(1, 2026)
+  })
+
+  it('filtre les CRA par mois', async () => {
+    userMock.value = managerUser
+    findByManagerMock.mockResolvedValue([
+      cra({ id: 1, consultantName: 'Alice Martin', month: 8 }),
+      cra({ id: 2, consultantName: 'Bob Dupont', month: 7 }),
+    ])
+
+    renderList()
+
+    expect(await screen.findByText('Alice Martin')).toBeInTheDocument()
+    expect(screen.getByText('Bob Dupont')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByTitle('Filtrer par mois'), { target: { value: '2026-07' } })
+
+    expect(await screen.findByText('Bob Dupont')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('Alice Martin')).not.toBeInTheDocument())
+  })
+
+  it('affiche la liste de ses consultants et filtre par consultant', async () => {
+    userMock.value = managerUser
+    findByManagerMock.mockResolvedValue([
+      cra({ consultantId: 10, consultantName: 'Alice Martin' }),
+      cra({ id: 2, consultantId: 11, consultantName: 'Bob Dupont', month: 7 }),
+    ])
+    filterListMock.mockResolvedValue([
+      { id: 10, fullName: 'Alice Martin', position: 'Dev', email: null },
+      { id: 11, fullName: 'Bob Dupont', position: 'Dev', email: null },
+    ])
+
+    renderList()
+
+    await screen.findAllByText('Alice Martin')
+    expect(filterListMock).toHaveBeenCalled()
+    expect(screen.getByRole('option', { name: 'Alice Martin' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'Bob Dupont' })).toBeInTheDocument()
+
+    fireEvent.change(screen.getByTitle('Consultants'), { target: { value: '11' } })
+
+    await waitFor(() => expect(screen.getAllByText('Alice Martin')).toHaveLength(1))
+    expect(screen.getAllByText('Bob Dupont').length).toBeGreaterThan(0)
+  })
+
+  it('ouvre l’historique d’un CRA depuis la liste', async () => {
+    userMock.value = managerUser
+    findByManagerMock.mockResolvedValue([
+      cra({ id: 2, consultantName: 'Bob Dupont', month: 7 }),
+    ])
+    historyMock.mockResolvedValue([
+      {
+        id: 1,
+        dateModif: '2026-07-01T10:00:00Z',
+        craId: 2,
+        modifierId: 10,
+        modifierName: 'Bob Dupont',
+        comment: 'Soumission',
+        statusBefore: 'DRAFT',
+        statusAfter: 'SUBMITTED',
+      },
+    ])
+
+    renderList()
+
+    await screen.findAllByText('Bob Dupont')
+    fireEvent.click(screen.getByRole('button', { name: 'Historique' }))
+
+    await waitFor(() => expect(historyMock).toHaveBeenCalledWith(2))
+    expect(await screen.findByText('Soumission')).toBeInTheDocument()
+  })
+})

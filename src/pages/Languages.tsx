@@ -1,6 +1,6 @@
 import { tr } from '../i18n/translate'
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { i18nApi, type AdminBundle, type ExportPayload, type LanguageEntry } from '../api/i18n'
+import { i18nApi, type AdminBundle, type ExportPayload, type LanguageEntry, type TranslationEntryPayload } from '../api/i18n'
 import { ApiError } from '../api/client'
 import { useI18n } from '../i18n'
 import { languageLabel } from '../i18n/messages'
@@ -23,6 +23,64 @@ function downloadJson(data: unknown, filename: string) {
   URL.revokeObjectURL(url)
 }
 
+function downloadCsv(csv: string, filename: string) {
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' })
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  document.body.removeChild(link)
+  URL.revokeObjectURL(url)
+}
+
+function csvCell(value: string | null | undefined): string {
+  const text = value ?? ''
+  if (/[",\r\n]/.test(text)) return '"' + text.replace(/"/g, '""') + '"'
+  return text
+}
+
+function parseCsv(text: string): string[][] {
+  const input = text.replace(/^\uFEFF/, '')
+  const rows: string[][] = []
+  let row: string[] = []
+  let field = ''
+  let inQuotes = false
+  for (let i = 0; i < input.length; i++) {
+    const char = input[i]
+    if (inQuotes) {
+      if (char === '"') {
+        if (input[i + 1] === '"') {
+          field += '"'
+          i++
+        } else {
+          inQuotes = false
+        }
+      } else {
+        field += char
+      }
+    } else if (char === '"') {
+      inQuotes = true
+    } else if (char === ',') {
+      row.push(field)
+      field = ''
+    } else if (char === '\n') {
+      row.push(field)
+      rows.push(row)
+      row = []
+      field = ''
+    } else if (char !== '\r') {
+      field += char
+    }
+  }
+  if (field.length > 0 || row.length > 0) {
+    row.push(field)
+    rows.push(row)
+  }
+  return rows.filter((cells) => cells.some((cell) => cell.trim() !== ''))
+}
+
 export function Languages() {
   const { refresh: refreshI18n } = useI18n()
   const { user } = useAuth()
@@ -39,6 +97,8 @@ export function Languages() {
   const [selectedCode, setSelectedCode] = useState('')
   const [autofilling, setAutofilling] = useState<string | null>(null)
   const [fillLanguage, setFillLanguage] = useState('')
+  const [exportColumns, setExportColumns] = useState<string[]>([])
+  const [exportFormat, setExportFormat] = useState<'csv' | 'json'>('csv')
   const [newKey, setNewKey] = useState('')
   const [newTranslations, setNewTranslations] = useState<Record<string, string>>({})
 
@@ -202,23 +262,129 @@ export function Languages() {
     }
   }
 
-  async function exportJson() {
+  const languages = useMemo(() => bundle?.languages ?? [], [bundle])
+  const exportSelected = useMemo(
+    () => languages.filter((language) => exportColumns.includes(language)),
+    [languages, exportColumns],
+  )
+
+  useEffect(() => {
+    setExportColumns((prev) => {
+      const valid = prev.filter((language) => languages.includes(language))
+      return valid.length >= 2 ? valid : languages.slice(0, 2)
+    })
+  }, [languages])
+
+  function toggleExportColumn(language: string) {
+    setExportColumns((prev) =>
+      prev.includes(language)
+        ? prev.filter((value) => value !== language)
+        : languages.filter((value) => prev.includes(value) || value === language),
+    )
+  }
+
+  function exportLanguages() {
     setError(null)
+    setMessage(null)
+    if (exportSelected.length < 2) {
+      setError(tr('Languages.au.moins.deux.langues'))
+      return
+    }
     try {
-      const payload = await i18nApi.exportAll()
-      downloadJson(payload, `soc360-langues-${new Date().toISOString().slice(0, 10)}.json`)
+      const rows = (bundle?.entries ?? []).map((entry) => ({
+        key: entry.key,
+        values: drafts[entry.id] ?? translationsOf(entry),
+      }))
+      const stamp = new Date().toISOString().slice(0, 10)
+      if (exportFormat === 'json') {
+        const payload: ExportPayload = {
+          version: 1,
+          languages: exportSelected,
+          entries: rows.map((row) => ({
+            key: row.key,
+            translations: Object.fromEntries(
+              exportSelected.map((language) => [language, row.values[language] ?? '']),
+            ),
+          })),
+        }
+        downloadJson(payload, `soc360-langues-${stamp}.json`)
+      } else {
+        const lines = [['cle', ...exportSelected].join(',')]
+        for (const row of rows) {
+          lines.push(
+            [row.key, ...exportSelected.map((language) => row.values[language] ?? '')]
+              .map(csvCell)
+              .join(','),
+          )
+        }
+        downloadCsv(lines.join('\r\n') + '\r\n', `soc360-langues-${stamp}.csv`)
+      }
+      setMessage(tr('Languages.exporte'))
     } catch (err) {
       setError(err instanceof ApiError ? err.message : tr('languages.errorExport'))
     }
   }
 
-  async function importJson(file: File) {
+  async function importLanguages(file: File) {
     setError(null)
     setMessage(null)
+    if (exportSelected.length < 2) {
+      setError(tr('Languages.au.moins.deux.langues'))
+      return
+    }
     try {
-      const text = await file.text()
-      const payload = JSON.parse(text) as ExportPayload
-      const result = await i18nApi.importAll(payload)
+      const entries: TranslationEntryPayload[] = []
+      if (exportFormat === 'json') {
+        const payload = JSON.parse(await file.text()) as ExportPayload
+        for (const entry of payload.entries ?? []) {
+          const key = (entry?.key ?? '').trim()
+          if (!key) continue
+          const translations: Record<string, string> = {}
+          for (const language of exportSelected) {
+            const value = entry.translations?.[language]
+            if (value != null && String(value).trim() !== '') translations[language] = String(value)
+          }
+          if (Object.keys(translations).length > 0) entries.push({ key, translations })
+        }
+      } else {
+        const rows = parseCsv(await file.text())
+        if (rows.length === 0) throw new Error('empty')
+        const header = rows[0].map((cell) => cell.trim().toLowerCase())
+        const hasHeader = ['cle', 'clé', 'key', 'msg_key'].includes(header[0] ?? '')
+        if (hasHeader) {
+          const indices = new Map<string, number>()
+          exportSelected.forEach((language) => {
+            const index = header.indexOf(language.toLowerCase())
+            if (index >= 0) indices.set(language, index)
+          })
+          for (let i = 1; i < rows.length; i++) {
+            const key = (rows[i][0] ?? '').trim()
+            if (!key) continue
+            const translations: Record<string, string> = {}
+            indices.forEach((index, language) => {
+              const value = (rows[i][index] ?? '').trim()
+              if (value) translations[language] = value
+            })
+            if (Object.keys(translations).length > 0) entries.push({ key, translations })
+          }
+        } else {
+          for (const row of rows) {
+            const key = (row[0] ?? '').trim()
+            if (!key) continue
+            const translations: Record<string, string> = {}
+            exportSelected.forEach((language, column) => {
+              const value = (row[column + 1] ?? '').trim()
+              if (value) translations[language] = value
+            })
+            if (Object.keys(translations).length > 0) entries.push({ key, translations })
+          }
+        }
+      }
+      if (entries.length === 0) {
+        setError(tr('Languages.fichier.invalide'))
+        return
+      }
+      const result = await i18nApi.importAll({ entries })
       setMessage(
         tr('languages.importResult', {
           inserted: result.inserted,
@@ -229,11 +395,10 @@ export function Languages() {
       await load()
       await refreshI18n()
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : tr('languages.errorInvalidJson'))
+      setError(err instanceof ApiError ? err.message : tr('Languages.fichier.invalide'))
     }
   }
 
-  const languages = useMemo(() => bundle?.languages ?? [], [bundle])
   const entryCount = bundle?.entries.length ?? 0
   const pageSize = user?.pageSize ?? 5
   const filteredEntries = useMemo(() => {
@@ -393,21 +558,70 @@ export function Languages() {
           </div>
         </div>
 
-        <div className="mt-6 flex flex-wrap items-center gap-3">
-          <InlineButton onClick={() => void exportJson()}>{tr('Languages.exporter.json')}</InlineButton>
-          <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50">
-            {tr('Languages.importer.json')}
-            <input
-              type="file"
-              accept="application/json,.json"
-              className="hidden"
-              onChange={(e) => {
-                const file = e.target.files?.[0]
-                if (file) void importJson(file)
-                e.target.value = ''
-              }}
-            />
-          </label>
+        <div className="mt-6 border-t border-gray-100 pt-4">
+          <h4 className="text-sm font-semibold text-gray-900" id="Languages.export.import.langue">
+            {tr('Languages.export.import.langue')}
+          </h4>
+          <p className="mt-1 text-sm text-gray-500">{tr('Languages.colonnes.a.exporter')}</p>
+          <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2">
+            {languages.map((language) => (
+              <label key={language} className="inline-flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="checkbox"
+                  checked={exportColumns.includes(language)}
+                  onChange={() => toggleExportColumn(language)}
+                />
+                {language}-{languageLabel(language)}
+              </label>
+            ))}
+          </div>
+          <div className="mt-4 flex flex-wrap items-center gap-6">
+            <div className="flex flex-wrap items-center gap-4">
+              <span className="text-sm font-medium text-gray-700">{tr('Languages.type.export')}</span>
+              <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="radio"
+                  name="exportFormat"
+                  value="csv"
+                  checked={exportFormat === 'csv'}
+                  onChange={() => setExportFormat('csv')}
+                />
+                CSV
+              </label>
+              <label className="inline-flex items-center gap-2 text-sm text-gray-700">
+                <input
+                  type="radio"
+                  name="exportFormat"
+                  value="json"
+                  checked={exportFormat === 'json'}
+                  onChange={() => setExportFormat('json')}
+                />
+                JSON
+              </label>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <InlineButton
+                onClick={exportLanguages}
+                disabled={exportSelected.length < 2}
+                title={exportSelected.length < 2 ? tr('Languages.au.moins.deux.langues') : undefined}
+              >
+                {tr('Languages.exporter')}
+              </InlineButton>
+              <label className="inline-flex cursor-pointer items-center gap-1.5 rounded-lg border border-gray-300 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50">
+                {tr('Languages.importer')}
+                <input
+                  type="file"
+                  accept={exportFormat === 'json' ? 'application/json,.json' : 'text/csv,.csv'}
+                  className="hidden"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0]
+                    if (file) void importLanguages(file)
+                    e.target.value = ''
+                  }}
+                />
+              </label>
+            </div>
+          </div>
         </div>
       </Card>
 

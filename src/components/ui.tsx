@@ -1,6 +1,7 @@
 import { tr } from '../i18n/translate'
 import type {
   ButtonHTMLAttributes,
+  ChangeEvent,
   CSSProperties,
   InputHTMLAttributes,
   ReactNode,
@@ -8,6 +9,8 @@ import type {
   TextareaHTMLAttributes,
 } from 'react'
 import { useI18n } from '../i18n'
+import { getFormatLocale } from '../lib/format'
+import { DateField } from './DateField'
 import { Icon, type IconName } from './icons'
 
 export function Spinner({ className = '' }: { className?: string }) {
@@ -32,9 +35,31 @@ export function FullPageSpinner() {
 }
 
 export function Input(props: InputHTMLAttributes<HTMLInputElement>) {
-  const { className = '', ...rest } = props
+  const { className = '', type, lang, ...rest } = props
+  // Tous les champs date passent par le sélecteur localisé react-datepicker.
+  if (type === 'date') {
+    return (
+      <DateField
+        value={rest.value == null ? '' : String(rest.value)}
+        onChange={(value) =>
+          rest.onChange?.({ target: { value } } as unknown as ChangeEvent<HTMLInputElement>)
+        }
+        minDate={rest.min == null ? undefined : String(rest.min)}
+        maxDate={rest.max == null ? undefined : String(rest.max)}
+        id={rest.id}
+        title={rest.title}
+        placeholder={rest.placeholder}
+        className={className}
+        disabled={rest.disabled}
+      />
+    )
+  }
+  // Les sélecteurs natifs de mois suivent l'attribut lang : localisation à la volée.
+  const locale = type === 'month' ? getFormatLocale() : undefined
   return (
     <input
+      type={type}
+      lang={lang ?? locale}
       className={`w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20 disabled:cursor-not-allowed disabled:bg-gray-100 ${className}`}
       {...rest}
     />

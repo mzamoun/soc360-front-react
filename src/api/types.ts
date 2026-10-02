@@ -15,12 +15,11 @@ export type NoteFraisStatus = 'DRAFT' | 'SUBMITTED' | 'VALIDATED' | 'REJECTED' |
 
 export type UnavailabilityStatus = 'DRAFT' | 'SUBMITTED' | 'VALIDATED' | 'REJECTED'
 
-export type UnavailabilityType =
-  | 'CONGE_PAYE'
-  | 'CONGE_RTT'
-  | 'CONGE_NON_PAYE'
-  | 'CONGE_MALADIE'
-  | 'CONGE_MATERNITE'
+/**
+ * Libellé du type d'indisponibilité, issu de la table de paramètres de la société
+ * (« Types d'indisponibilités »). Les codes historiques (CONGE_PAYE, …) restent acceptés.
+ */
+export type UnavailabilityType = string
 
 export type PaymentMethod = 'CARD' | 'TRANSFER' | 'CHECK' | 'OTHER'
 
@@ -600,6 +599,38 @@ export interface UnavailabilityHistoryDto {
   comment: string | null
   nbEventsBefore: number
   nbEventsAfter: number
+}
+
+export interface UnavailabilityTypeConfigDto {
+  id: number
+  socId: number | null
+  sortOrder: number
+  typeLabel: string
+  durationRule: string | null
+  countType: string | null
+  mainConditions: string | null
+  remuneration: string | null
+  cpAcquisition: string | null
+  legalProvision: string | null
+  syntecProvision: string | null
+  documentRequired: string | null
+}
+
+export interface UnavailabilityTypeConfigRow {
+  typeLabel: string
+  durationRule: string | null
+  countType: string | null
+  mainConditions: string | null
+  remuneration: string | null
+  cpAcquisition: string | null
+  legalProvision: string | null
+  syntecProvision: string | null
+  documentRequired: string | null
+}
+
+export interface SaveUnavailabilityTypesRequest {
+  socId: number | null
+  rows: UnavailabilityTypeConfigRow[]
 }
 
 export interface FichePaieDto {

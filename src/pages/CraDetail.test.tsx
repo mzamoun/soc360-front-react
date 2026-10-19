@@ -806,6 +806,143 @@ describe('CraDetail', () => {
     await waitFor(() => expect(screen.queryAllByText(/Congé ·/)).toHaveLength(0))
   })
 
+  it('supprime manuellement un congé et remet le jour à vide', async () => {
+    userMock.value = {
+      id: 10,
+      username: 'consultant',
+      email: 'consultant@soc.fr',
+      firstName: 'Alice',
+      lastName: 'Martin',
+      phone: null,
+      role: 'CONSULTANT',
+      active: true,
+      socId: 5,
+      socName: 'SOC Test',
+      consultantId: 10,
+    } as UserDto
+
+    const draft = cra(true, 'DRAFT')
+    const workDay = draft.days.findIndex((d) => d.dayType === 'WORKED')
+    draft.days = draft.days.map((d, i) =>
+      i === workDay
+        ? {
+            ...d,
+            dayType: 'LEAVE',
+            activities: [
+              {
+                id: 900,
+                activityId: 5,
+                activityName: 'Congé payé',
+                activityColor: null,
+                hours: 0,
+                days: 1,
+                valid: false,
+                comment: null,
+              },
+            ],
+          }
+        : d,
+    )
+
+    getByIdMock.mockResolvedValue(draft)
+    activitiesFindAllMock.mockResolvedValue([
+      {
+        id: 5,
+        name: 'Congé payé',
+        description: null,
+        price: 0,
+        currency: 'EUR',
+        startDate: null,
+        endDate: null,
+        type: null,
+        project: null,
+        consultant: null,
+        soc: null,
+        active: true,
+        indispo: true,
+        weekendAllowed: false,
+        holidayAllowed: false,
+      },
+    ])
+    holidaysFindByCountryYearMock.mockResolvedValue([])
+    socHolidaysListMock.mockResolvedValue([])
+
+    render(
+      <MemoryRouter initialEntries={['/cras/1']}>
+        <CraDetail id={1} />
+        <DialogHost />
+      </MemoryRouter>,
+    )
+
+    await screen.findByText('Alice Martin', { exact: false }, { timeout: 3000 })
+    expect((await screen.findAllByText(/Congé ·/)).length).toBeGreaterThan(0)
+
+    // Ouvre l'événement du jour puis supprime le congé manuellement.
+    fireEvent.click(screen.getAllByRole('button', { name: /Congé payé/ })[0])
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: "Supprimer l'événement" }))
+
+    // Le jour redevient vide : plus de libellé « Congé · 0 j ».
+    await waitFor(() => expect(screen.queryAllByText(/Congé ·/)).toHaveLength(0))
+  })
+
+  it('un manager propriétaire ne peut pas supprimer un congé validé', async () => {
+    userMock.value = managerUser
+    const ownCra = { ...cra(true, 'DRAFT'), consultantId: managerUser.id, managerId: 2 }
+    const workDay = ownCra.days.findIndex((d) => d.dayType === 'WORKED')
+    ownCra.days = ownCra.days.map((d, i) =>
+      i === workDay
+        ? {
+            ...d,
+            dayType: 'LEAVE',
+            activities: [
+              {
+                id: 901,
+                activityId: 5,
+                activityName: 'Congé payé',
+                activityColor: null,
+                hours: 0,
+                days: 1,
+                valid: true,
+                comment: null,
+              },
+            ],
+          }
+        : d,
+    )
+    getByIdMock.mockResolvedValue(ownCra)
+    activitiesFindAllMock.mockResolvedValue([
+      {
+        id: 5,
+        name: 'Congé payé',
+        description: null,
+        price: 0,
+        currency: 'EUR',
+        startDate: null,
+        endDate: null,
+        type: null,
+        project: null,
+        consultant: null,
+        soc: null,
+        active: true,
+        indispo: true,
+        weekendAllowed: false,
+        holidayAllowed: false,
+      },
+    ])
+    holidaysFindByCountryYearMock.mockResolvedValue([])
+    socHolidaysListMock.mockResolvedValue([])
+
+    renderDetail()
+
+    await screen.findByText('Alice Martin', { exact: false }, { timeout: 3000 })
+    fireEvent.click(screen.getByRole('button', { name: 'Ligne' }))
+
+    // L'activité validée reste en lecture seule pour son propriétaire (même manager).
+    expect(screen.queryByLabelText("Supprimer l'événement")).not.toBeInTheDocument()
+    expect(screen.getAllByText(/Congé payé/).length).toBeGreaterThan(0)
+  })
+
   it('un manager ne supprime pas les événements validés (supprimer tous)', async () => {
     userMock.value = managerUser
     const draft = cra(true, 'DRAFT')
@@ -866,6 +1003,30 @@ describe('CraDetail', () => {
 
     await screen.findByText('Alice Martin', { exact: false }, { timeout: 3000 })
     expect(screen.getByRole('button', { name: 'Déclarer une absence' })).toBeInTheDocument()
+  })
+
+  it('un manager peut déclarer une absence dans son propre CRA', async () => {
+    userMock.value = managerUser
+    const ownCra = { ...cra(true, 'DRAFT'), consultantId: managerUser.id, managerId: 2 }
+    getByIdMock.mockResolvedValue(ownCra)
+    saveMock.mockResolvedValue(ownCra)
+    declareAbsenceMock.mockResolvedValue(ownCra)
+    activitiesFindAllMock.mockResolvedValue([])
+    holidaysFindByCountryYearMock.mockResolvedValue([])
+    socHolidaysListMock.mockResolvedValue([])
+
+    renderDetail()
+
+    await screen.findByText('Alice Martin', { exact: false }, { timeout: 3000 })
+    fireEvent.click(screen.getByRole('button', { name: 'Déclarer une absence' }))
+    fireEvent.click(
+      screen.getAllByRole('button', { name: 'Déclarer une absence' }).pop() as HTMLElement,
+    )
+
+    await waitFor(() => expect(declareAbsenceMock).toHaveBeenCalledWith(
+      1,
+      expect.objectContaining({ type: 'CONGE_PAYE' }),
+    ))
   })
 
   it('masque « Déclarer une absence » pour un admin', async () => {

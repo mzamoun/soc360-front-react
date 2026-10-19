@@ -338,9 +338,10 @@ export function CraDetail({
   const formEditable = editable || managerEditsValidated
   const canAddEvents = formEditable || consultantEditsSemiValid
 
-  // Le consultant ne peut pas modifier une activité validée (le manager peut).
+  // Le collaborateur concerné (consultant ou manager) ne peut pas modifier une activité validée
+  // par son manager ; le manager du collaborateur (non propriétaire) peut, lui, la modifier.
   function canModifyActivity(act: EditableActivity): boolean {
-    if (!isConsultant) return true
+    if (!isOwner) return true
     return !act.valid
   }
 
@@ -445,11 +446,19 @@ export function CraDetail({
 
   function removeActivity(dayIndex: number, actIndex: number) {
     setDays((prev) =>
-      prev.map((d, i) =>
-        i === dayIndex
-          ? { ...d, activities: d.activities.filter((_, j) => j !== actIndex) }
-          : d,
-      ),
+      prev.map((d, i) => {
+        if (i !== dayIndex) return d
+        const activities = d.activities.filter((_, j) => j !== actIndex)
+        // Supprimer le dernier événement d'un jour de congé doit rendre le jour vide : sinon il
+        // reste coloré « Congé · 0 j ». Même règle que « Supprimer tous les événements ».
+        const isLeaveColor = d.dayType === 'LEAVE' || d.dayType === 'SICK_LEAVE'
+        let dayType = d.dayType
+        if (activities.length === 0 && isLeaveColor) {
+          const dow = new Date(d.date + 'T00:00:00').getDay()
+          dayType = dow === 0 || dow === 6 ? 'WEEKEND' : 'WORKED'
+        }
+        return { ...d, activities, dayType }
+      }),
     )
   }
 
@@ -1347,7 +1356,6 @@ export function CraDetail({
           day={days[eventModal]}
           editable={canAddEvents}
           formEditable={formEditable}
-          isConsultant={isConsultant}
           managerCanAct={managerCanAct}
           isOwner={isOwner}
           activities={filteredActivities}
@@ -1547,7 +1555,6 @@ function EventModal({
   day,
   editable,
   formEditable,
-  isConsultant,
   managerCanAct,
   isOwner,
   activities,
@@ -1560,7 +1567,6 @@ function EventModal({
   day: EditableDay
   editable: boolean
   formEditable: boolean
-  isConsultant: boolean
   managerCanAct: boolean
   isOwner: boolean
   activities: ActivityDto[]
@@ -1571,7 +1577,7 @@ function EventModal({
   onClose: () => void
 }) {
   const total = dayTotal(day)
-  const canModify = (act: EditableActivity) => !isConsultant || !act.valid
+  const canModify = (act: EditableActivity) => !isOwner || !act.valid
   return (
     <Modal
       open

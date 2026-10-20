@@ -8,6 +8,7 @@ import { consultantsApi } from '../api/consultants'
 import type {
   ConsultantSummary,
   UnavailabilityDto,
+  UnavailabilityHalfDayRequest,
   UnavailabilityHistoryDto,
   UnavailabilityType,
 } from '../api/types'
@@ -50,6 +51,7 @@ export function Unavailability() {
   const [formStart, setFormStart] = useState('')
   const [formEnd, setFormEnd] = useState('')
   const [formComment, setFormComment] = useState('')
+  const [formHalfDays, setFormHalfDays] = useState<UnavailabilityHalfDayRequest[]>([])
   const [formError, setFormError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [historyFor, setHistoryFor] = useState<UnavailabilityDto | null>(null)
@@ -95,6 +97,44 @@ export function Unavailability() {
 
   const data = list.data ?? []
   const selected = useMemo(() => data.find((u) => u.id === selectedId) ?? null, [list.data, selectedId])
+
+  // Aperçu calendrier pendant la saisie : il met en évidence l'indisponibilité en cours
+  // (même non enregistrée) avec ses demi-journées, et affiche les autres indispos, congés et
+  // activités du consultant.
+  const previewUnavailability = useMemo<UnavailabilityDto | null>(() => {
+    if (!showForm || !formStart || !formEnd || formStart > formEnd) return null
+    const consultantId = isConsultant
+      ? (user?.consultantId ?? user?.id ?? null)
+      : formConsultantId
+    if (!consultantId) return null
+    const existing = editingId != null ? data.find((u) => u.id === editingId) : null
+    const start = new Date(formStart + 'T00:00:00')
+    const end = new Date(formEnd + 'T00:00:00')
+    const durationDays = Math.round((end.getTime() - start.getTime()) / 86400000) + 1
+    return {
+      id: editingId ?? -1,
+      consultantId,
+      consultantName:
+        existing?.consultantName ??
+        (isConsultant
+          ? `${user?.firstName ?? ''} ${user?.lastName ?? ''}`.trim()
+          : (consultants.data?.find((c) => c.id === consultantId)?.fullName ?? '')),
+      socId: existing?.socId ?? user?.socId ?? 0,
+      type: formType,
+      startDate: formStart,
+      endDate: formEnd,
+      status: existing?.status ?? 'DRAFT',
+      comment: formComment.trim() || null,
+      rejectedReason: existing?.rejectedReason ?? null,
+      submittedAt: existing?.submittedAt ?? null,
+      validatedAt: existing?.validatedAt ?? null,
+      durationDays,
+      halfDays: formHalfDays,
+    }
+  }, [
+    showForm, formStart, formEnd, isConsultant, user, formConsultantId, editingId,
+    data, consultants.data, formType, formComment, formHalfDays,
+  ])
 
   if (!user) return null
 
@@ -173,6 +213,7 @@ export function Unavailability() {
     setFormStart(today.toISOString().slice(0, 10))
     setFormEnd(end.toISOString().slice(0, 10))
     setFormComment('')
+    setFormHalfDays([])
     setFormError(null)
     setShowForm(true)
   }
@@ -184,8 +225,41 @@ export function Unavailability() {
     setFormStart(u.startDate)
     setFormEnd(u.endDate)
     setFormComment(u.comment ?? '')
+    setFormHalfDays((u.halfDays ?? []).map((h) => ({ date: h.date, halfDay: h.halfDay })))
     setFormError(null)
     setShowForm(true)
+  }
+
+  function nextDate(value: string): string {
+    // Calcul en UTC : `new Date('yyyy-mm-ddT00:00:00')` + toISOString() peut renvoyer la veille
+    // dans les fuseaux positifs (Europe/Paris), ce qui bloquait l'ajout de la 2e demi-journée.
+    const [year, month, day] = value.split('-').map(Number)
+    const date = new Date(Date.UTC(year, month - 1, day + 1))
+    return date.toISOString().slice(0, 10)
+  }
+
+  function addHalfDay() {
+    if (!formStart || !formEnd || formStart > formEnd) {
+      setFormError('Renseignez d’abord les dates de début et de fin.')
+      return
+    }
+    const used = new Set(formHalfDays.map((h) => h.date))
+    let date = formStart
+    while (used.has(date) && date <= formEnd) date = nextDate(date)
+    if (date > formEnd) {
+      setFormError('Tous les jours de l’intervalle ont déjà une demi-journée précisée.')
+      return
+    }
+    setFormHalfDays((prev) => [...prev, { date, halfDay: 'AM' }])
+    setFormError(null)
+  }
+
+  function updateHalfDay(index: number, patch: Partial<UnavailabilityHalfDayRequest>) {
+    setFormHalfDays((prev) => prev.map((h, i) => (i === index ? { ...h, ...patch } : h)))
+  }
+
+  function removeHalfDay(index: number) {
+    setFormHalfDays((prev) => prev.filter((_, i) => i !== index))
   }
 
   async function handleSave() {
@@ -209,6 +283,18 @@ export function Unavailability() {
       setFormError(tr('Unavailability.commentaire.obligatoire'))
       return
     }
+    const halfDayDates = new Set<string>()
+    for (const halfDay of formHalfDays) {
+      if (!halfDay.date || halfDay.date < formStart || halfDay.date > formEnd) {
+        setFormError('Chaque demi-journée doit être datée dans l’intervalle de l’indisponibilité.')
+        return
+      }
+      if (halfDayDates.has(halfDay.date)) {
+        setFormError('Une seule demi-journée par jour est autorisée.')
+        return
+      }
+      halfDayDates.add(halfDay.date)
+    }
     setSaving(true)
     setFormError(null)
     try {
@@ -219,6 +305,7 @@ export function Unavailability() {
         startDate: formStart,
         endDate: formEnd,
         comment: formComment.trim() || null,
+        halfDays: formHalfDays,
       }
       if (editingId != null) {
         await unavailabilityApi.update(editingId, request)
@@ -297,6 +384,22 @@ export function Unavailability() {
     )
   }
 
+  // Une seule demi-journée par jour : le bouton (+) se désactive quand tous les jours de
+  // l'intervalle ont déjà leur demi-journée (cas particulier : date de début = date de fin).
+  const intervalDays = (() => {
+    if (!formStart || !formEnd || formStart > formEnd) return 0
+    const start = new Date(formStart + 'T00:00:00Z').getTime()
+    const end = new Date(formEnd + 'T00:00:00Z').getTime()
+    return Math.round((end - start) / 86400000) + 1
+  })()
+  const usedHalfDayDays = new Set(formHalfDays.map((h) => h.date).filter(Boolean)).size
+  const canAddHalfDay = intervalDays > 0 && usedHalfDayDays < intervalDays
+  const addHalfDayTitle = canAddHalfDay
+    ? 'Préciser les jours ayant juste une demi-journée dans cet intervalle'
+    : intervalDays === 1
+      ? 'Une seule demi-journée est possible quand la date de début et de fin sont identiques.'
+      : 'Une demi-journée a déjà été précisée pour chaque jour de l’intervalle.'
+
   return (
     <div>
       <PageHeader
@@ -352,44 +455,120 @@ export function Unavailability() {
           <h3 className="mb-3 text-sm font-semibold text-gray-900">
             {editingId != null ? tr('Unavailability.modifier.l.indisponibilite') : tr('Unavailability.nouvelle.indisponibilite')}
           </h3>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-            {!isConsultant && (
-              <Field label={tr('Unavailability.consultant')} id="Unavailability.consultant">
-                <Select
-                  value={formConsultantId ?? ''}
-                  onChange={(e) => setFormConsultantId(e.target.value ? Number(e.target.value) : null)}
-                  title={tr('Unavailability.consultant')}
-                >
-                  <option value="">{tr('Unavailability.choisir')}</option>
-                  {consultants.data?.map((c) => (
-                    <option key={c.id} value={c.id}>
-                      {c.fullName}
-                    </option>
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-start gap-3">
+              {!isConsultant && (
+                <div className="w-56 max-w-full">
+                  <Field label={tr('Unavailability.consultant')} id="Unavailability.consultant">
+                    <Select
+                      value={formConsultantId ?? ''}
+                      onChange={(e) => setFormConsultantId(e.target.value ? Number(e.target.value) : null)}
+                      title={tr('Unavailability.consultant')}
+                    >
+                      <option value="">{tr('Unavailability.choisir')}</option>
+                      {consultants.data?.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.fullName}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                </div>
+              )}
+              <div className="w-56 max-w-full">
+                <Field label={tr('Unavailability.type')} id="Unavailability.type">
+                  <Select value={formType} onChange={(e) => setFormType(e.target.value)}>
+                    {!formType && <option value="">{tr('Unavailability.choisir')}</option>}
+                    {formType && !typeOptions.includes(formType) && (
+                      <option value={formType}>{unavailabilityTypeLabel(formType)}</option>
+                    )}
+                    {typeOptions.map((label) => (
+                      <option key={label} value={label}>
+                        {label}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-start gap-3">
+              <div className="w-44 max-w-full">
+                <Field label={tr('Unavailability.du')} id="Unavailability.du">
+                  <Input type="date" value={formStart} min={formHireDate ?? undefined}
+                    onChange={(e) => setFormStart(e.target.value)} />
+                </Field>
+              </div>
+              <div className="w-44 max-w-full">
+                <Field label={tr('Unavailability.au')} id="Unavailability.au">
+                  <Input type="date" value={formEnd} min={formHireDate ?? formStart}
+                    onChange={(e) => setFormEnd(e.target.value)} />
+                </Field>
+              </div>
+            </div>
+
+            <div>
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-medium text-gray-700">
+                  Jours en demi-journée
+                </p>
+                <IconButton
+                  icon="add"
+                  label="Ajouter une demi-journée"
+                  variant="new"
+                  title={addHalfDayTitle}
+                  disabled={!canAddHalfDay}
+                  onClick={addHalfDay}
+                />
+              </div>
+              {formHalfDays.length === 0 ? (
+                <p className="mt-1 text-xs text-gray-500">
+                  Aucun jour en demi-journée : l’indisponibilité couvre des journées complètes.
+                </p>
+              ) : (
+                <div className="mt-2 space-y-2">
+                  {formHalfDays.map((halfDay, index) => (
+                    <div key={index} className="flex flex-wrap items-center gap-2">
+                      <Input
+                        type="date"
+                        value={halfDay.date}
+                        min={formStart || undefined}
+                        max={formEnd || undefined}
+                        onChange={(e) => updateHalfDay(index, { date: e.target.value })}
+                        className="w-40"
+                      />
+                      <label className="flex items-center gap-1 text-sm text-gray-600">
+                        <input
+                          type="radio"
+                          name={`unavailability-half-day-${index}`}
+                          checked={halfDay.halfDay === 'AM'}
+                          onChange={() => updateHalfDay(index, { halfDay: 'AM' })}
+                          className="h-4 w-4 border-gray-300 text-brand-600 focus:ring-brand-500"
+                        />
+                        Matin
+                      </label>
+                      <label className="flex items-center gap-1 text-sm text-gray-600">
+                        <input
+                          type="radio"
+                          name={`unavailability-half-day-${index}`}
+                          checked={halfDay.halfDay === 'PM'}
+                          onChange={() => updateHalfDay(index, { halfDay: 'PM' })}
+                          className="h-4 w-4 border-gray-300 text-brand-600 focus:ring-brand-500"
+                        />
+                        Après-midi
+                      </label>
+                      <IconButton
+                        icon="delete"
+                        label="Supprimer la demi-journée"
+                        variant="danger"
+                        onClick={() => removeHalfDay(index)}
+                      />
+                    </div>
                   ))}
-                </Select>
-              </Field>
-            )}
-            <Field label={tr('Unavailability.type')} id="Unavailability.type">
-              <Select value={formType} onChange={(e) => setFormType(e.target.value)}>
-                {!formType && <option value="">{tr('Unavailability.choisir')}</option>}
-                {formType && !typeOptions.includes(formType) && (
-                  <option value={formType}>{unavailabilityTypeLabel(formType)}</option>
-                )}
-                {typeOptions.map((label) => (
-                  <option key={label} value={label}>
-                    {label}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            <Field label={tr('Unavailability.du')} id="Unavailability.du">
-              <Input type="date" value={formStart} min={formHireDate ?? undefined}
-                onChange={(e) => setFormStart(e.target.value)} />
-            </Field>
-            <Field label={tr('Unavailability.au')} id="Unavailability.au">
-              <Input type="date" value={formEnd} min={formHireDate ?? formStart}
-                onChange={(e) => setFormEnd(e.target.value)} />
-            </Field>
+                </div>
+              )}
+            </div>
+
             <Field label={`${tr('Unavailability.commentaire')} *`} id="Unavailability.commentaire">
               <Textarea
                 rows={1}
@@ -399,6 +578,13 @@ export function Unavailability() {
               />
             </Field>
           </div>
+
+          {previewUnavailability && (
+            <div className="mt-4">
+              <UnavailabilityCalendar selected={previewUnavailability} unavailabilities={data} />
+            </div>
+          )}
+
           {formError && (
             <div className="mt-3">
               <Alert variant="error">{formError}</Alert>

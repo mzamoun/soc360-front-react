@@ -30,6 +30,7 @@ import type {
   CraDto,
   DayType,
   ActivityDto,
+  HalfDay,
   LinkedUnavailabilityDto,
   SaveCraRequest,
   UnavailabilityType,
@@ -40,6 +41,7 @@ interface EditableActivity {
   id: string
   activityId: string
   days: string
+  halfDay: HalfDay | null
   comment: string
   valid: boolean
 }
@@ -66,6 +68,7 @@ function dayToEditable(day: CraDto['days'][number]): EditableDay {
       id: String(a.id),
       activityId: String(a.activityId),
       days: a.days != null ? String(a.days) : '1',
+      halfDay: a.halfDay ?? null,
       comment: a.comment ?? '',
       valid: a.valid ?? false,
     })),
@@ -92,6 +95,35 @@ function allowedDaysFor(day: EditableDay, actIndex: number): string[] {
   const allowed = DAY_VALUES.filter((v) => other + Number(v) <= 1 + 1e-9)
   if (act?.days && !allowed.includes(act.days)) allowed.push(act.days)
   return allowed
+}
+
+function halfDayOrder(halfDay: HalfDay | null | undefined): number {
+  if (halfDay === 'AM') return 0
+  if (halfDay === 'PM') return 2
+  return 1
+}
+
+/**
+ * Demi-journées encore libres pour un événement de 0,5 j : si un autre événement du jour occupe
+ * déjà le matin, le second doit être l'après-midi (et inversement).
+ */
+function allowedHalfDaysFor(day: EditableDay, actIndex: number): HalfDay[] {
+  const used = new Set(
+    day.activities
+      .filter((a, i) => i !== actIndex && Number(a.days) === 0.5 && a.halfDay)
+      .map((a) => a.halfDay as HalfDay),
+  )
+  return (['AM', 'PM'] as HalfDay[]).filter((h) => !used.has(h))
+}
+
+function defaultHalfDayFor(day: EditableDay): HalfDay | null {
+  const used = new Set(
+    day.activities
+      .filter((a) => Number(a.days) === 0.5 && a.halfDay)
+      .map((a) => a.halfDay as HalfDay),
+  )
+  const allowed = (['AM', 'PM'] as HalfDay[]).filter((h) => !used.has(h))
+  return allowed.length === 1 ? allowed[0] : null
 }
 
 function formatDays(value: number): string {
@@ -152,12 +184,14 @@ function ActivityChip({
   color,
   name,
   days,
+  halfDay,
   valid,
   onClick,
 }: {
   color?: string | null
   name: string
   days: number
+  halfDay?: HalfDay | null
   valid?: boolean
   onClick?: () => void
 }) {
@@ -171,6 +205,11 @@ function ActivityChip({
         className="h-2 w-2 shrink-0 rounded-full"
         style={{ backgroundColor: color ?? '#9ca3af' }}
       />
+      {halfDay && (
+        <span className="shrink-0 text-[10px] font-normal uppercase text-gray-400">
+          {halfDay === 'AM' ? 'matin' : 'après-midi'}
+        </span>
+      )}
       <span className="truncate">{name}</span>
       <span className="ml-auto shrink-0 text-gray-400">{tr('CraDetail.')}{days}</span>
       {valid && <span className="shrink-0 text-green-600">✓</span>}
@@ -272,6 +311,13 @@ export function CraDetail({
     }
     return acts.filter((a) => !a.indispo)
   }, [activities, cra?.type])
+
+  // Activités de congé : proposées à la demande dans la modale d'événement d'un CRA
+  // (case « Inclure les congés »), jamais pour une Indispo qui ne contient que des congés.
+  const leaveActivities = useMemo(
+    () => (activities ?? []).filter((a) => a.indispo),
+    [activities],
+  )
 
   const monthActivities = useMemo(() => {
     if (!cra) return []
@@ -393,6 +439,8 @@ export function CraDetail({
         return
       }
     }
+    let nextPatch = patch
+    let swap: { index: number; halfDay: HalfDay } | null = null
     if (patch.days !== undefined) {
       const day = days[dayIndex]
       const act = day?.activities[actIndex]
@@ -402,13 +450,47 @@ export function CraDetail({
         setFormError('Le total du jour ne peut pas dépasser 1 jour.')
         return
       }
+      if (patch.days === '0.5' && day) {
+        // Une seule demi-journée par créneau : si l'autre événement occupe déjà le matin,
+        // celui-ci bascule automatiquement l'après-midi (et inversement).
+        const allowed = allowedHalfDaysFor(day, actIndex)
+        const desired = patch.halfDay !== undefined ? patch.halfDay : act?.halfDay ?? null
+        const halfDay = desired && allowed.includes(desired)
+          ? desired
+          : allowed.length === 1 ? allowed[0] : null
+        nextPatch = { ...patch, halfDay }
+      } else {
+        // La demi-journée (matin / après-midi) n'est pertinente que pour 0,5 jour.
+        nextPatch = { ...patch, halfDay: null }
+      }
+    } else if (patch.halfDay !== undefined && patch.halfDay !== null) {
+      const day = days[dayIndex]
+      const act = day?.activities[actIndex]
+      const conflictIndex = day
+        ? day.activities.findIndex(
+            (a, i) => i !== actIndex && Number(a.days) === 0.5 && a.halfDay === patch.halfDay,
+          )
+        : -1
+      if (conflictIndex >= 0 && day) {
+        // Échanger les deux demi-journées : si je passe le premier événement l'après-midi,
+        // l'autre événement (qui occupait l'après-midi) prend le créneau libéré (le matin).
+        const freed = act?.halfDay ?? (patch.halfDay === 'AM' ? 'PM' : 'AM')
+        swap = { index: conflictIndex, halfDay: freed }
+      }
     }
+    const swapTarget = swap
     setDays((prev) =>
       prev.map((d, i) =>
         i === dayIndex
           ? {
               ...d,
-              activities: d.activities.map((a, j) => (j === actIndex ? { ...a, ...patch } : a)),
+              activities: d.activities.map((a, j) => {
+                if (j === actIndex) return { ...a, ...nextPatch }
+                if (swapTarget && j === swapTarget.index) {
+                  return { ...a, halfDay: swapTarget.halfDay }
+                }
+                return a
+              }),
             }
           : d,
       ),
@@ -423,6 +505,7 @@ export function CraDetail({
     }
     const remaining = 1 - dayTotal(day)
     const defaultDays = remaining >= 1 ? '1' : '0.5'
+    const halfDay = defaultDays === '0.5' ? defaultHalfDayFor(day) : null
     setDays((prev) =>
       prev.map((d, i) =>
         i === dayIndex
@@ -434,6 +517,7 @@ export function CraDetail({
                   id: `new-${Date.now()}-${Math.random().toString(36).slice(2)}`,
                   activityId: '',
                   days: defaultDays,
+                  halfDay,
                   comment: '',
                   valid: false,
                 },
@@ -493,6 +577,7 @@ export function CraDetail({
             hours: 0,
             days: Number(a.days) || 0,
             valid: a.valid,
+            halfDay: Number(a.days) === 0.5 ? a.halfDay : null,
             comment: a.comment || null,
           }))
         const dayDays = dayActivities.reduce((sum, a) => sum + (a.days ?? 0), 0)
@@ -760,7 +845,7 @@ export function CraDetail({
           if (d.activities.length > 0 || d.dayType !== 'WORKED') return d
           return {
             ...d,
-            activities: [{ id: `new-${Date.now()}-${Math.random().toString(36).slice(2)}`, activityId, days: '1', comment: '', valid: false }],
+            activities: [{ id: `new-${Date.now()}-${Math.random().toString(36).slice(2)}`, activityId, days: '1', halfDay: null, comment: '', valid: false }],
           }
         }),
       )
@@ -793,7 +878,7 @@ export function CraDetail({
         if (d.dayType !== 'WORKED' || d.activities.length > 0) return d
         return {
           ...d,
-          activities: [{ id: `new-${Date.now()}-${Math.random().toString(36).slice(2)}`, activityId, days: '1', comment: '', valid: false }],
+          activities: [{ id: `new-${Date.now()}-${Math.random().toString(36).slice(2)}`, activityId, days: '1', halfDay: null, comment: '', valid: false }],
         }
       }),
     )
@@ -1029,24 +1114,28 @@ export function CraDetail({
                   </div>
                   <div className="mt-1 space-y-1">
                     {day?.activities
-                      .filter((act) => act.activityId)
-                      .map((act, j) => {
-                      const info = activityMap.get(act.activityId)
-                      return (
-                        <ActivityChip
-                          key={j}
-                          color={info?.type?.color}
-                          name={info?.name ?? 'Activité inconnue'}
-                          days={Number(act.days) || 0}
-                          valid={act.valid}
-                          onClick={
-                            canAddEvents && canModifyActivity(act) && dayIndex >= 0
-                              ? () => setEventModal(dayIndex)
-                              : undefined
-                          }
-                        />
-                      )
-                    })}
+                      .map((act, index) => ({ act, index }))
+                      .filter(({ act }) => act.activityId)
+                      // Le matin reste en haut de la cellule, l'après-midi en bas.
+                      .sort((a, b) => halfDayOrder(a.act.halfDay) - halfDayOrder(b.act.halfDay))
+                      .map(({ act, index }) => {
+                        const info = activityMap.get(act.activityId)
+                        return (
+                          <ActivityChip
+                            key={index}
+                            color={info?.type?.color}
+                            name={info?.name ?? 'Activité inconnue'}
+                            days={Number(act.days) || 0}
+                            halfDay={act.halfDay}
+                            valid={act.valid}
+                            onClick={
+                              canAddEvents && canModifyActivity(act) && dayIndex >= 0
+                                ? () => setEventModal(dayIndex)
+                                : undefined
+                            }
+                          />
+                        )
+                      })}
                     {day && day.dayType !== 'WORKED' && (
                       <span className="block px-1 text-[11px] font-medium text-gray-400">
                         {day.dayType === 'PUBLIC_HOLIDAY' && holidays.has(date)
@@ -1353,12 +1442,15 @@ export function CraDetail({
 
       {eventModal !== null && eventModal >= 0 && eventModal < days.length && (
         <EventModal
+          key={days[eventModal].date}
           day={days[eventModal]}
           editable={canAddEvents}
           formEditable={formEditable}
           managerCanAct={managerCanAct}
           isOwner={isOwner}
           activities={filteredActivities}
+          leaveActivities={isIndispo ? [] : leaveActivities}
+          leaveSelectable={!isIndispo}
           onUpdateActivity={(actIndex, patch) => updateActivity(eventModal, actIndex, patch)}
           onAddActivity={() => addActivity(eventModal)}
           onRemoveActivity={(actIndex) => removeActivity(eventModal, actIndex)}
@@ -1551,6 +1643,12 @@ function FillRangeModal({
   )
 }
 
+function halfDayLabel(halfDay: HalfDay | null | undefined): string {
+  if (halfDay === 'AM') return 'Matin'
+  if (halfDay === 'PM') return 'Après-midi'
+  return ''
+}
+
 function EventModal({
   day,
   editable,
@@ -1558,6 +1656,8 @@ function EventModal({
   managerCanAct,
   isOwner,
   activities,
+  leaveActivities,
+  leaveSelectable,
   onUpdateActivity,
   onAddActivity,
   onRemoveActivity,
@@ -1570,6 +1670,8 @@ function EventModal({
   managerCanAct: boolean
   isOwner: boolean
   activities: ActivityDto[]
+  leaveActivities: ActivityDto[]
+  leaveSelectable: boolean
   onUpdateActivity: (actIndex: number, patch: Partial<EditableActivity>) => void
   onAddActivity: () => void
   onRemoveActivity: (actIndex: number) => void
@@ -1578,6 +1680,25 @@ function EventModal({
 }) {
   const total = dayTotal(day)
   const canModify = (act: EditableActivity) => !isOwner || !act.valid
+  // Les congés sont masqués par défaut ; la case les ajoute à la liste de choix. Un congé déjà
+  // sélectionné reste toujours proposé pour ne pas casser l'événement existant.
+  const [showLeaves, setShowLeaves] = useState(false)
+  const selectedIds = useMemo(
+    () => new Set(day.activities.map((a) => a.activityId).filter(Boolean)),
+    [day.activities],
+  )
+  const activityOptions = useMemo(() => {
+    const options = new Map<string, ActivityDto>()
+    for (const a of activities) options.set(String(a.id), a)
+    if (showLeaves) {
+      for (const a of leaveActivities) options.set(String(a.id), a)
+    } else {
+      for (const a of leaveActivities) {
+        if (selectedIds.has(String(a.id))) options.set(String(a.id), a)
+      }
+    }
+    return Array.from(options.values())
+  }, [activities, leaveActivities, selectedIds, showLeaves])
   return (
     <Modal
       open
@@ -1595,11 +1716,22 @@ function EventModal({
       }
     >
       <div className="space-y-4">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <span className={`text-sm font-semibold ${dayIsValid(day) ? 'text-green-600' : 'text-red-500'}`}>
             {formatDays(total)}
             {day.dayType === 'WORKED' && !dayIsValid(day) ? ' — doit totaliser 1 jour' : ''}
           </span>
+          {leaveSelectable && (
+            <label className="ml-auto flex shrink-0 items-center gap-1.5 text-sm text-gray-600">
+              <input
+                type="checkbox"
+                checked={showLeaves}
+                onChange={(e) => setShowLeaves(e.target.checked)}
+                className="h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500"
+              />
+              Inclure les congés
+            </label>
+          )}
         </div>
 
         <div className="space-y-2">
@@ -1622,7 +1754,7 @@ function EventModal({
                       onChange={(e) => onUpdateActivity(j, { activityId: e.target.value })}
                     >
                       <option value="">{tr('CraDetail.activite')}</option>
-                      {activities.map((a) => (
+                      {activityOptions.map((a) => (
                         <option key={a.id} value={a.id}>
                           {a.name}
                         </option>
@@ -1639,6 +1771,34 @@ function EventModal({
                         </option>
                       ))}
                     </Select>
+                    {act.days === '0.5' && (
+                      <div
+                        role="group"
+                        aria-label="Demi-journée"
+                        className="flex shrink-0 items-center gap-2 text-sm text-gray-600"
+                      >
+                        <label className="flex items-center gap-1">
+                          <input
+                            type="radio"
+                            name={`half-day-${j}`}
+                            checked={act.halfDay === 'AM'}
+                            onChange={() => onUpdateActivity(j, { halfDay: 'AM' })}
+                            className="h-4 w-4 border-gray-300 text-brand-600 focus:ring-brand-500"
+                          />
+                          Matin
+                        </label>
+                        <label className="flex items-center gap-1">
+                          <input
+                            type="radio"
+                            name={`half-day-${j}`}
+                            checked={act.halfDay === 'PM'}
+                            onChange={() => onUpdateActivity(j, { halfDay: 'PM' })}
+                            className="h-4 w-4 border-gray-300 text-brand-600 focus:ring-brand-500"
+                          />
+                          Après-midi
+                        </label>
+                      </div>
+                    )}
                     <input
                       value={act.comment}
                       onChange={(e) => onUpdateActivity(j, { comment: e.target.value })}
@@ -1656,6 +1816,7 @@ function EventModal({
                 ) : (
                   <span className="text-sm">
                     {info?.name ?? 'Activité inconnue'} · {formatDays(Number(act.days) || 0)}
+                    {act.days === '0.5' && act.halfDay ? ` (${halfDayLabel(act.halfDay)})` : ''}
                     {act.valid ? ' ✓' : ''}
                     {act.comment ? ` — ${act.comment}` : ''}
                   </span>

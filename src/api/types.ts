@@ -402,6 +402,8 @@ export interface ActivityRequest {
   holidayAllowed?: boolean
 }
 
+export type HalfDay = 'AM' | 'PM'
+
 export interface CraDayActivityDto {
   id: number
   activityId: number
@@ -410,6 +412,7 @@ export interface CraDayActivityDto {
   hours: number
   days: number
   valid: boolean
+  halfDay?: HalfDay | null
   comment: string | null
 }
 
@@ -482,6 +485,7 @@ export interface CraDayActivityRequest {
   hours?: number | null
   days?: number | null
   valid?: boolean | null
+  halfDay?: HalfDay | null
   comment?: string | null
 }
 
@@ -565,6 +569,11 @@ export interface HrDocumentDto {
   createdAt: string
 }
 
+export interface UnavailabilityHalfDayDto {
+  date: string
+  halfDay: HalfDay
+}
+
 export interface UnavailabilityDto {
   id: number
   consultantId: number
@@ -579,6 +588,12 @@ export interface UnavailabilityDto {
   submittedAt: string | null
   validatedAt: string | null
   durationDays: number
+  halfDays?: UnavailabilityHalfDayDto[]
+}
+
+export interface UnavailabilityHalfDayRequest {
+  date: string
+  halfDay: HalfDay
 }
 
 export interface UnavailabilityRequest {
@@ -588,6 +603,7 @@ export interface UnavailabilityRequest {
   startDate: string
   endDate: string
   comment?: string | null
+  halfDays?: UnavailabilityHalfDayRequest[]
 }
 
 export interface UnavailabilityHistoryDto {

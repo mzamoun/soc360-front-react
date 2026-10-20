@@ -154,6 +154,8 @@ export interface SocDto {
   dateFermeture?: string | null
   website?: string | null
   address?: Address | null
+  leaveDayColor?: string | null
+  weekendColor?: string | null
 }
 
 export interface SubscriptionDto {
@@ -425,6 +427,7 @@ export interface CraDayDto {
   comment: string | null
   activities: CraDayActivityDto[]
   unavailable?: boolean
+  weekend?: boolean
 }
 
 export interface LinkedUnavailabilityDto {
@@ -452,6 +455,8 @@ export interface CraDto {
   comment: string | null
   days: CraDayDto[]
   unavailabilities?: LinkedUnavailabilityDto[]
+  leaveDayColor?: string | null
+  weekendColor?: string | null
 }
 
 export interface DeclareAbsenceRequest {

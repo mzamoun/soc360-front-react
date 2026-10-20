@@ -53,9 +53,9 @@ interface EditableDay {
   comment: string
   activities: EditableActivity[]
   unavailable: boolean
+  weekend?: boolean
 }
 
-const DAY_TYPES: DayType[] = ['WORKED', 'WEEKEND', 'PUBLIC_HOLIDAY', 'LEAVE', 'SICK_LEAVE', 'OTHER']
 const DAY_VALUES = ['0.5', '1']
 
 function dayToEditable(day: CraDto['days'][number]): EditableDay {
@@ -73,6 +73,7 @@ function dayToEditable(day: CraDto['days'][number]): EditableDay {
       valid: a.valid ?? false,
     })),
     unavailable: day.unavailable ?? false,
+    weekend: day.weekend ?? false,
   }
 }
 
@@ -86,6 +87,11 @@ function dayTotal(day: EditableDay): number {
 
 function dayIsValid(day: EditableDay): boolean {
   return day.dayType !== 'WORKED' || Math.abs(dayTotal(day) - 1) < 1e-9
+}
+
+/** Jour de week-end selon le pays de la société (fourni par le backend). */
+function isWeekendDay(day: EditableDay | null | undefined): boolean {
+  return !!day && (day.weekend === true || day.dayType === 'WEEKEND')
 }
 
 function allowedDaysFor(day: EditableDay, actIndex: number): string[] {
@@ -131,7 +137,7 @@ function formatDays(value: number): string {
   return Number.isInteger(value) ? `${value} ${unit}` : `${formatNumber(value)} ${unit}`
 }
 
-function dayBackground(dayType: DayType | undefined): string {
+function dayBackground(dayType: DayType | undefined, weekend = false): string {
   switch (dayType) {
     case 'LEAVE':
       return 'bg-yellow-100'
@@ -141,10 +147,21 @@ function dayBackground(dayType: DayType | undefined): string {
       return 'bg-gray-200'
     case 'WORKED':
     case undefined:
-      return 'bg-white'
+      return weekend ? 'bg-yellow-50' : 'bg-white'
     default:
-      return 'bg-gray-50'
+      return weekend ? 'bg-yellow-50' : 'bg-gray-50'
   }
+}
+
+function dayColorStyle(
+  dayType: DayType | undefined,
+  weekend: boolean,
+  leaveColor: string,
+  weekendColor: string,
+): { backgroundColor: string } | undefined {
+  if (dayType === 'LEAVE') return { backgroundColor: leaveColor }
+  if (dayType === 'PUBLIC_HOLIDAY' || dayType === 'BEFORE_HIRE') return undefined
+  return weekend ? { backgroundColor: weekendColor } : undefined
 }
 
 function activityDayRestriction(
@@ -538,8 +555,7 @@ export function CraDetail({
         const isLeaveColor = d.dayType === 'LEAVE' || d.dayType === 'SICK_LEAVE'
         let dayType = d.dayType
         if (activities.length === 0 && isLeaveColor) {
-          const dow = new Date(d.date + 'T00:00:00').getDay()
-          dayType = dow === 0 || dow === 6 ? 'WEEKEND' : 'WORKED'
+          dayType = d.weekend ? 'WEEKEND' : 'WORKED'
         }
         return { ...d, activities, dayType }
       }),
@@ -557,8 +573,7 @@ export function CraDetail({
         const isLeaveColor = d.dayType === 'LEAVE' || d.dayType === 'SICK_LEAVE'
         let dayType = d.dayType
         if (activities.length === 0 && d.activities.length > 0 && isLeaveColor) {
-          const dow = new Date(d.date + 'T00:00:00').getDay()
-          dayType = dow === 0 || dow === 6 ? 'WEEKEND' : 'WORKED'
+          dayType = d.weekend ? 'WEEKEND' : 'WORKED'
         }
         return { ...d, activities, dayType }
       }),
@@ -888,6 +903,14 @@ export function CraDetail({
 
   const firstDay = new Date(cra.year, cra.month - 1, 1)
   const startOffset = (firstDay.getDay() + 6) % 7
+  const weekendColumns = new Set<number>()
+  for (const day of days) {
+    if (isWeekendDay(day)) {
+      weekendColumns.add((new Date(day.date + 'T00:00:00').getDay() + 6) % 7)
+    }
+  }
+  const leaveColor = cra.leaveDayColor || '#fef9c3'
+  const weekendColor = cra.weekendColor || '#fefce8'
   const daysInMonth = new Date(cra.year, cra.month, 0).getDate()
   const cells: ReactNode[] = []
   for (let i = 0; i < startOffset; i++) cells.push(null)
@@ -1069,17 +1092,26 @@ export function CraDetail({
       {tab === 'calendar' ? (
         <Card className="overflow-hidden">
           <div className="grid grid-cols-7 gap-px bg-gray-200">
-            {weekdayShortLabels().map((label) => (
+            {weekdayShortLabels().map((label, index) => (
               <div
                 key={label}
-                className="bg-gray-50 px-2 py-2 text-center text-xs font-semibold uppercase tracking-wide text-gray-500"
+                className={`px-2 py-2 text-center text-xs font-semibold uppercase tracking-wide text-gray-500 ${
+                  weekendColumns.has(index) ? '' : 'bg-gray-50'
+                }`}
+                style={weekendColumns.has(index) ? { backgroundColor: weekendColor } : undefined}
               >
                 {label}
               </div>
             ))}
             {cells.map((dayNum, i) => {
               if (dayNum == null) {
-                return <div key={`empty-${i}`} className="bg-white" />
+                return (
+                  <div
+                    key={`empty-${i}`}
+                    className={weekendColumns.has(i % 7) ? '' : 'bg-white'}
+                    style={weekendColumns.has(i % 7) ? { backgroundColor: weekendColor } : undefined}
+                  />
+                )
               }
               const date = `${cra.year}-${String(cra.month).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`
               const dayIndex = days.findIndex((d) => d.date === date)
@@ -1087,7 +1119,8 @@ export function CraDetail({
               return (
                 <div
                   key={date}
-                  className={`min-h-28 p-1.5 ${dayBackground(day?.dayType)}`}
+                  className={`min-h-28 p-1.5 ${dayBackground(day?.dayType, isWeekendDay(day))}`}
+                  style={dayColorStyle(day?.dayType, isWeekendDay(day), leaveColor, weekendColor)}
                   title={
                     day?.dayType === 'BEFORE_HIRE'
                       ? tr('CraDetail.avant.embauche', { date: cra.hireDate ?? '' })
@@ -1176,9 +1209,6 @@ export function CraDetail({
                     {tr('CraDetail.jour.2')}
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-gray-500">
-                    {tr('CraDetail.type')}
-                  </th>
-                  <th className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-gray-500">
                     {tr('CraDetail.total')}
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-bold uppercase tracking-wide text-gray-500">
@@ -1194,7 +1224,11 @@ export function CraDetail({
                   const i = dayPage.offset + idx
                   const total = dayTotal(day)
                   return (
-                    <tr key={day.date} className="align-top">
+                    <tr
+                      key={day.date}
+                      className="align-top"
+                      style={isWeekendDay(day) ? { backgroundColor: weekendColor } : undefined}
+                    >
                       <td className="whitespace-nowrap px-4 py-3 text-right text-sm tabular-nums text-gray-400">
                         {i + 1}
                       </td>
@@ -1204,38 +1238,6 @@ export function CraDetail({
                           day: '2-digit',
                           month: '2-digit',
                         })}
-                      </td>
-                      <td className="px-4 py-3">
-                        {day.dayType === 'BEFORE_HIRE' ? (
-                          <span
-                            className="text-sm text-gray-400"
-                            title={tr('CraDetail.avant.embauche', { date: cra.hireDate ?? '' })}
-                          >
-                            {dayTypeLabel('BEFORE_HIRE')}
-                          </span>
-                        ) : formEditable ? (
-                          <Select
-                            className="w-36"
-                            value={day.dayType}
-                            disabled={day.unavailable && isConsultant}
-                            title={day.unavailable ? tr('CraDetail.jour.indisponible') : undefined}
-                            onChange={(e) =>
-                              updateDay(i, {
-                                dayType: e.target.value as DayType,
-                                workedHours:
-                                  e.target.value === 'WORKED' ? day.workedHours : '0',
-                              })
-                            }
-                          >
-                            {DAY_TYPES.map((t) => (
-                              <option key={t} value={t}>
-                                {dayTypeLabel(t)}
-                              </option>
-                            ))}
-                          </Select>
-                        ) : (
-                          <span className="text-sm">{dayTypeLabel(day.dayType)}</span>
-                        )}
                       </td>
                       <td className="px-4 py-3">
                         <span

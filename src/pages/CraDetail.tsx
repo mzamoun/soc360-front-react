@@ -15,6 +15,7 @@ import { Button, Card, Field, IconButton, InlineButton, Input, RefreshButton, Se
 import { Badge, ErrorBlock, LoadingBlock, Modal, Pagination } from '../components/data'
 import { dialog } from '../components/dialog'
 import { CraHistoryModal } from '../components/CraHistoryModal'
+import { DocumentAttachment, DocumentView, type AttachedDocument } from '../components/DocumentAttachment'
 import {
   CRA_STATUS_LABELS,
   UNAVAILABILITY_STATUS_KEYS,
@@ -692,6 +693,8 @@ export function CraDetail({
     startDate: string
     endDate: string
     comment?: string | null
+    documentId?: number | null
+    documentComment?: string | null
   }): Promise<boolean> {
     if (!cra) return false
     setFormError(null)
@@ -1453,6 +1456,19 @@ export function CraDetail({
           activities={filteredActivities}
           leaveActivities={isIndispo ? [] : leaveActivities}
           leaveSelectable={!isIndispo}
+          document={(() => {
+            const day = days[eventModal]
+            const absence = (cra.unavailabilities ?? []).find(
+              (a) => day.date >= a.startDate && day.date <= a.endDate,
+            )
+            return absence?.documentId && absence.documentName
+              ? {
+                  id: absence.documentId,
+                  name: absence.documentName,
+                  comment: absence.documentComment ?? null,
+                }
+              : null
+          })()}
           onUpdateActivity={(actIndex, patch) => updateActivity(eventModal, actIndex, patch)}
           onAddActivity={() => addActivity(eventModal)}
           onRemoveActivity={(actIndex) => removeActivity(eventModal, actIndex)}
@@ -1660,6 +1676,7 @@ function EventModal({
   activities,
   leaveActivities,
   leaveSelectable,
+  document,
   onUpdateActivity,
   onAddActivity,
   onRemoveActivity,
@@ -1674,6 +1691,7 @@ function EventModal({
   activities: ActivityDto[]
   leaveActivities: ActivityDto[]
   leaveSelectable: boolean
+  document?: AttachedDocument | null
   onUpdateActivity: (actIndex: number, patch: Partial<EditableActivity>) => void
   onAddActivity: () => void
   onRemoveActivity: (actIndex: number) => void
@@ -1718,6 +1736,7 @@ function EventModal({
       }
     >
       <div className="space-y-4">
+        <DocumentView value={document} />
         <div className="flex flex-wrap items-center gap-3">
           <span className={`text-sm font-semibold ${dayIsValid(day) ? 'text-green-600' : 'text-red-500'}`}>
             {formatDays(total)}
@@ -2031,6 +2050,8 @@ function AbsenceModal({
     startDate: string
     endDate: string
     comment?: string | null
+    documentId?: number | null
+    documentComment?: string | null
   }) => Promise<boolean>
   onClose: () => void
 }) {
@@ -2041,6 +2062,7 @@ function AbsenceModal({
   const [start, setStart] = useState(monthStart)
   const [end, setEnd] = useState(monthStart)
   const [comment, setComment] = useState('')
+  const [document, setDocument] = useState<AttachedDocument | null>(null)
   const [error, setError] = useState<string | null>(null)
   const TYPES: UnavailabilityType[] = [
     'CONGE_PAYE',
@@ -2056,7 +2078,14 @@ function AbsenceModal({
       return
     }
     setError(null)
-    await onSubmit({ type, startDate: start, endDate: end, comment: comment.trim() || null })
+    await onSubmit({
+      type,
+      startDate: start,
+      endDate: end,
+      comment: comment.trim() || null,
+      documentId: document?.id ?? null,
+      documentComment: document?.comment ?? null,
+    })
   }
 
   return (
@@ -2113,6 +2142,9 @@ function AbsenceModal({
         </div>
         <Field label={tr('CraDetail.commentaire.2')} id="CraDetail.absence.commentaire">
           <Textarea rows={2} value={comment} onChange={(e) => setComment(e.target.value)} />
+        </Field>
+        <Field label={tr('document.attachment.add')} id="CraDetail.absence.document">
+          <DocumentAttachment value={document} onChange={setDocument} />
         </Field>
         {error && <ErrorBlock message={error} />}
       </div>

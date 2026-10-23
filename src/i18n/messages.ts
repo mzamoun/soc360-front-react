@@ -29,6 +29,19 @@ export function languageLabel(language: string): string {
 type Messages = Record<string, string>
 
 const fr: Messages = {
+  'document.attachment.add': 'Ajouter un document',
+  'document.attachment.none': 'Aucun document joint',
+  'document.attachment.title': 'Ajouter un document justificatif',
+  'document.attachment.file': 'Fichier',
+  'document.attachment.comment': 'Commentaire (facultatif)',
+  'document.attachment.validate': 'Valider',
+  'document.attachment.label': 'Document justificatif :',
+  'document.attachment.view': 'Voir le document',
+  'document.attachment.remove': 'Retirer le document',
+  'document.attachment.downloadError': 'Impossible de télécharger le document.',
+  'document.attachment.requiredFile': 'Sélectionnez un fichier.',
+  'document.attachment.uploadError': 'Impossible d’ajouter le document.',
+  'document.required': 'Un document justificatif est obligatoire pour ce type.',
   'Consultants.email.obligatoire': 'L’email est obligatoire.',
   'Consultants.email.invalide': 'Saisissez un email valide.',
   'common.loading': 'Chargement…',
@@ -244,6 +257,19 @@ const fr: Messages = {
 }
 
 const en: Messages = {
+  'document.attachment.add': 'Add a document',
+  'document.attachment.none': 'No attached document',
+  'document.attachment.title': 'Add a supporting document',
+  'document.attachment.file': 'File',
+  'document.attachment.comment': 'Comment (optional)',
+  'document.attachment.validate': 'Validate',
+  'document.attachment.label': 'Supporting document:',
+  'document.attachment.view': 'View the document',
+  'document.attachment.remove': 'Remove the document',
+  'document.attachment.downloadError': 'Unable to download the document.',
+  'document.attachment.requiredFile': 'Select a file.',
+  'document.attachment.uploadError': 'Unable to add the document.',
+  'document.required': 'A supporting document is required for this type.',
   'Consultants.email.obligatoire': 'Email is required.',
   'Consultants.email.invalide': 'Enter a valid email address.',
   'common.loading': 'Loading…',
@@ -456,6 +482,19 @@ const en: Messages = {
 }
 
 const ar: Messages = {
+  'document.attachment.add': 'إضافة مستند',
+  'document.attachment.none': 'لا يوجد مستند مرفق',
+  'document.attachment.title': 'إضافة مستند مبرر',
+  'document.attachment.file': 'ملف',
+  'document.attachment.comment': 'تعليق (اختياري)',
+  'document.attachment.validate': 'تأكيد',
+  'document.attachment.label': 'المستند المبرر:',
+  'document.attachment.view': 'عرض المستند',
+  'document.attachment.remove': 'إزالة المستند',
+  'document.attachment.downloadError': 'تعذر تنزيل المستند.',
+  'document.attachment.requiredFile': 'حدد ملفًا.',
+  'document.attachment.uploadError': 'تعذر إضافة المستند.',
+  'document.required': 'المستند المبرر مطلوب لهذا النوع.',
   'Consultants.email.obligatoire': 'البريد الإلكتروني مطلوب.',
   'Consultants.email.invalide': 'أدخل بريدًا إلكترونيًا صالحًا.',
   'settings.craColors.title': 'ألوان أيام CRA',

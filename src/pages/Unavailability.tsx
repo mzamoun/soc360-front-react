@@ -4,6 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import { unavailabilityApi } from '../api/unavailability'
 import { unavailabilityTypesApi } from '../api/unavailabilityTypes'
+import { documentsApi } from '../api/documents'
 import { consultantsApi } from '../api/consultants'
 import type {
   ConsultantSummary,
@@ -86,6 +87,7 @@ export function Unavailability() {
   const [formFirstDay, setFormFirstDay] = useState<DayPart>('ALL')
   const [formLastDay, setFormLastDay] = useState<DayPart>('ALL')
   const [formDocument, setFormDocument] = useState<AttachedDocument | null>(null)
+  const [removedDocumentIds, setRemovedDocumentIds] = useState<number[]>([])
   const [formError, setFormError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [historyFor, setHistoryFor] = useState<UnavailabilityDto | null>(null)
@@ -253,6 +255,15 @@ export function Unavailability() {
     ? (user?.hireDate ?? null)
     : (consultants.data?.find((c) => c.id === formConsultantId)?.hireDate ?? null)
 
+  function handleRowClick(u: UnavailabilityDto) {
+    setSelectedId(u.id)
+    if (canEdit(u)) {
+      openEdit(u)
+    } else {
+      setShowForm(false)
+    }
+  }
+
   function openCreate() {
     if (isConsultant && !user?.hireDate) {
       void dialog.error(tr('hireDate.required'))
@@ -270,11 +281,13 @@ export function Unavailability() {
     setFormFirstDay('ALL')
     setFormLastDay('ALL')
     setFormDocument(null)
+    setRemovedDocumentIds([])
     setFormError(null)
     setShowForm(true)
   }
 
   function openEdit(u: UnavailabilityDto) {
+    setSelectedId(u.id)
     setEditingId(u.id)
     setFormConsultantId(u.consultantId)
     setFormType(u.type)
@@ -286,6 +299,7 @@ export function Unavailability() {
     setFormDocument(u.documentId != null && u.documentName
       ? { id: u.documentId, name: u.documentName, comment: u.documentComment ?? null }
       : null)
+    setRemovedDocumentIds([])
     setFormError(null)
     setShowForm(true)
   }
@@ -302,6 +316,20 @@ export function Unavailability() {
       if (formFirstDay === 'AM') setFormFirstDay('ALL')
       if (formLastDay === 'PM') setFormLastDay('ALL')
     }
+  }
+
+  async function closeForm() {
+    if (formDocument?.temporary) {
+      try {
+        await documentsApi.delete(formDocument.id)
+      } catch {
+        // Document déjà supprimé : on ferme quand même le formulaire.
+      }
+    }
+    setFormDocument(null)
+    setRemovedDocumentIds([])
+    setShowForm(false)
+    setFormError(null)
   }
 
   async function handleSave() {
@@ -346,6 +374,15 @@ export function Unavailability() {
       } else {
         await unavailabilityApi.create(request)
       }
+      for (const documentId of removedDocumentIds) {
+        try {
+          await documentsApi.delete(documentId)
+        } catch {
+          // Document déjà supprimé : l'indisponibilité est bien détachée.
+        }
+      }
+      setRemovedDocumentIds([])
+      setFormDocument(null)
       setShowForm(false)
       list.reload()
     } catch (err) {
@@ -468,160 +505,6 @@ export function Unavailability() {
         </div>
       </div>
 
-      {showForm && (
-        <Card className="mb-4 p-4">
-          <h3 className="mb-3 text-sm font-semibold text-gray-900">
-            {editingId != null ? tr('Unavailability.modifier.l.indisponibilite') : tr('Unavailability.nouvelle.indisponibilite')}
-          </h3>
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-start gap-3">
-              {!isConsultant && (
-                <div className="w-56 max-w-full">
-                  <Field label={tr('Unavailability.consultant')} id="Unavailability.consultant">
-                    <Select
-                      value={formConsultantId ?? ''}
-                      onChange={(e) => setFormConsultantId(e.target.value ? Number(e.target.value) : null)}
-                      title={tr('Unavailability.consultant')}
-                    >
-                      <option value="">{tr('Unavailability.choisir')}</option>
-                      {consultants.data?.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.fullName}
-                        </option>
-                      ))}
-                    </Select>
-                  </Field>
-                </div>
-              )}
-              <div className="w-56 max-w-full">
-                <Field label={tr('Unavailability.type')} id="Unavailability.type">
-                  <Select value={formType} onChange={(e) => setFormType(e.target.value)}>
-                    {!formType && <option value="">{tr('Unavailability.choisir')}</option>}
-                    {formType && !typeOptions.includes(formType) && (
-                      <option value={formType}>{unavailabilityTypeLabel(formType)}</option>
-                    )}
-                    {typeOptions.map((label) => (
-                      <option key={label} value={label}>
-                        {label}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-start gap-3">
-              <div className="w-44 max-w-full">
-                <Field label={tr('Unavailability.du')} id="Unavailability.du">
-                  <Input type="date" value={formStart} min={formHireDate ?? undefined}
-                    onChange={(e) => changeDates(e.target.value, formEnd)} />
-                </Field>
-              </div>
-              <div className="w-44 max-w-full">
-                <Field label={tr('Unavailability.au')} id="Unavailability.au">
-                  <Input type="date" value={formEnd} min={formHireDate ?? formStart}
-                    onChange={(e) => changeDates(formStart, e.target.value)} />
-                </Field>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap items-end gap-3">
-              {formStart && formEnd && formStart === formEnd ? (
-                <div className="w-56 max-w-full">
-                  <Field label="Demi-journée" id="Unavailability.demiJournee">
-                    <Select
-                      value={formFirstDay}
-                      onChange={(e) => {
-                        const value = e.target.value as DayPart
-                        setFormFirstDay(value)
-                        setFormLastDay(value)
-                      }}
-                    >
-                      <option value="ALL">Journée entière</option>
-                      <option value="AM">Matin</option>
-                      <option value="PM">Après-midi</option>
-                    </Select>
-                  </Field>
-                </div>
-              ) : (
-                <>
-                  <div className="w-56 max-w-full">
-                    <Field label="Début" id="Unavailability.debutDemiJournee">
-                      <Select
-                        value={formFirstDay}
-                        onChange={(e) => setFormFirstDay(e.target.value as DayPart)}
-                      >
-                        <option value="ALL">Journée entière</option>
-                        <option value="PM">Après-midi</option>
-                      </Select>
-                    </Field>
-                  </div>
-                  <div className="w-56 max-w-full">
-                    <Field label="Fin" id="Unavailability.finDemiJournee">
-                      <Select
-                        value={formLastDay}
-                        onChange={(e) => setFormLastDay(e.target.value as DayPart)}
-                      >
-                        <option value="ALL">Journée entière</option>
-                        <option value="AM">Matin</option>
-                      </Select>
-                    </Field>
-                  </div>
-                </>
-              )}
-              <p className="pb-2 text-sm text-gray-500">
-                Durée : {durationFor(formStart, formEnd, formFirstDay, formLastDay, formCountType)} j
-              </p>
-            </div>
-
-            <Field label={tr('document.attachment.add')} id="Unavailability.document">
-              <DocumentAttachment
-                value={formDocument}
-                onChange={setFormDocument}
-                socId={typesSocId}
-                consultantId={isConsultant ? (user?.consultantId ?? user?.id ?? null) : formConsultantId}
-              />
-            </Field>
-
-            <Field label={tr('Unavailability.commentaire')} id="Unavailability.commentaire">
-              <Textarea
-                rows={1}
-                value={formComment}
-                onChange={(e) => setFormComment(e.target.value)}
-                placeholder={tr('Unavailability.motif.remarques')}
-              />
-            </Field>
-          </div>
-
-          {previewUnavailability && (
-            <div className="mt-4">
-              <UnavailabilityCalendar selected={previewUnavailability} unavailabilities={data} />
-            </div>
-          )}
-
-          {formError && (
-            <div className="mt-3">
-              <Alert variant="error">{formError}</Alert>
-            </div>
-          )}
-          <div className="mt-4 flex items-center justify-end gap-2">
-            <IconButton
-              icon="cancel"
-              label={tr('Unavailability.annuler')}
-              onClick={() => setShowForm(false)}
-              disabled={saving} id="Unavailability.annuler" />
-            <IconButton
-              icon={editingId != null ? 'save' : 'add'}
-              label={editingId != null ? 'Enregistrer' : 'Créer'}
-              variant="primary"
-              onClick={() => void handleSave()}
-              disabled={saving}
-              loading={saving}
-            />
-          </div>
-        </Card>
-      )}
-
       {list.error && <ErrorBlock message={list.error} />}
       {list.loading && <LoadingBlock />}
 
@@ -678,7 +561,7 @@ export function Unavailability() {
                   {pageItems.map((u, i) => (
                     <tr
                       key={u.id}
-                      onClick={() => setSelectedId(u.id)}
+                      onClick={() => handleRowClick(u)}
                       className={`align-top cursor-pointer ${
                         u.id === selectedId
                           ? '[&>td]:border-y-2 [&>td]:border-blue-400 [&>td:first-child]:border-l-2 [&>td:last-child]:border-r-2 [&>td]:bg-blue-50'
@@ -814,14 +697,179 @@ export function Unavailability() {
             </div>
           )}
 
-          {selected && (
-            <div className="mt-4">
-              <UnavailabilityCalendar selected={selected} unavailabilities={data} />
-            </div>
-          )}
         </>
       )}
 
+      {showForm && (
+        <Card className="mb-4 p-4">
+          <h3 className="mb-3 text-sm font-semibold text-gray-900">
+            {editingId != null ? tr('Unavailability.modifier.l.indisponibilite') : tr('Unavailability.nouvelle.indisponibilite')}
+          </h3>
+          <div className="flex flex-wrap items-start gap-[30px]">
+            <div className="w-full max-w-[28.75rem] space-y-3">
+            <div className="flex flex-wrap items-start gap-3">
+              {!isConsultant && (
+                <div className="w-56 max-w-full">
+                  <Field label={tr('Unavailability.consultant')} id="Unavailability.consultant">
+                    <Select
+                      value={formConsultantId ?? ''}
+                      onChange={(e) => setFormConsultantId(e.target.value ? Number(e.target.value) : null)}
+                      title={tr('Unavailability.consultant')}
+                    >
+                      <option value="">{tr('Unavailability.choisir')}</option>
+                      {consultants.data?.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.fullName}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                </div>
+              )}
+              <div className="w-56 max-w-full">
+                <Field label={tr('Unavailability.type')} id="Unavailability.type">
+                  <Select value={formType} onChange={(e) => setFormType(e.target.value)}>
+                    {!formType && <option value="">{tr('Unavailability.choisir')}</option>}
+                    {formType && !typeOptions.includes(formType) && (
+                      <option value={formType}>{unavailabilityTypeLabel(formType)}</option>
+                    )}
+                    {typeOptions.map((label) => (
+                      <option key={label} value={label}>
+                        {label}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-start gap-3">
+              <div className="w-44 max-w-full">
+                <Field label={tr('Unavailability.du')} id="Unavailability.du">
+                  <Input type="date" value={formStart} min={formHireDate ?? undefined}
+                    onChange={(e) => changeDates(e.target.value, formEnd)} />
+                </Field>
+              </div>
+              <div className="w-44 max-w-full">
+                <Field label={tr('Unavailability.au')} id="Unavailability.au">
+                  <Input type="date" value={formEnd} min={formHireDate ?? formStart}
+                    onChange={(e) => changeDates(formStart, e.target.value)} />
+                </Field>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-end gap-3">
+              {formStart && formEnd && formStart === formEnd ? (
+                <div className="w-56 max-w-full">
+                  <Field label="Demi-journée" id="Unavailability.demiJournee">
+                    <Select
+                      value={formFirstDay}
+                      onChange={(e) => {
+                        const value = e.target.value as DayPart
+                        setFormFirstDay(value)
+                        setFormLastDay(value)
+                      }}
+                    >
+                      <option value="ALL">Journée entière</option>
+                      <option value="AM">Matin</option>
+                      <option value="PM">Après-midi</option>
+                    </Select>
+                  </Field>
+                </div>
+              ) : (
+                <>
+                  <div className="w-56 max-w-full">
+                    <Field label="Début" id="Unavailability.debutDemiJournee">
+                      <Select
+                        value={formFirstDay}
+                        onChange={(e) => setFormFirstDay(e.target.value as DayPart)}
+                      >
+                        <option value="ALL">Journée entière</option>
+                        <option value="PM">Après-midi</option>
+                      </Select>
+                    </Field>
+                  </div>
+                  <div className="w-56 max-w-full">
+                    <Field label="Fin" id="Unavailability.finDemiJournee">
+                      <Select
+                        value={formLastDay}
+                        onChange={(e) => setFormLastDay(e.target.value as DayPart)}
+                      >
+                        <option value="ALL">Journée entière</option>
+                        <option value="AM">Matin</option>
+                      </Select>
+                    </Field>
+                  </div>
+                </>
+              )}
+              <p className="pb-2 text-sm text-gray-500">
+                Durée : {durationFor(formStart, formEnd, formFirstDay, formLastDay, formCountType)} j
+              </p>
+            </div>
+
+            <div style={{ maxWidth: isConsultant ? '14rem' : '28.75rem' }}>
+              <Field label={tr('Unavailability.commentaire')} id="Unavailability.commentaire">
+                <Textarea
+                  rows={1}
+                  value={formComment}
+                  onChange={(e) => setFormComment(e.target.value)}
+                  placeholder={tr('Unavailability.motif.remarques')}
+                />
+              </Field>
+            </div>
+            </div>
+
+            <div className="min-w-0 flex-1">
+              <Field label={tr('document.attachment.add')} id="Unavailability.document">
+                <DocumentAttachment
+                  value={formDocument}
+                  onChange={(document) => {
+                    if (!document && formDocument && !formDocument.temporary) {
+                      setRemovedDocumentIds((prev) => [...prev, formDocument.id])
+                    }
+                    setFormDocument(document)
+                  }}
+                  socId={typesSocId}
+                  consultantId={isConsultant ? (user?.consultantId ?? user?.id ?? null) : formConsultantId}
+                />
+              </Field>
+            </div>
+          </div>
+
+          {editingId == null && previewUnavailability && (
+            <div className="mt-4">
+              <UnavailabilityCalendar selected={previewUnavailability} unavailabilities={data} />
+            </div>
+          )}
+
+          {formError && (
+            <div className="mt-3">
+              <Alert variant="error">{formError}</Alert>
+            </div>
+          )}
+          <div className="mt-4 flex items-center justify-end gap-2">
+            <IconButton
+              icon="cancel"
+              label={tr('Unavailability.annuler')}
+              onClick={() => void closeForm()}
+              disabled={saving} id="Unavailability.annuler" />
+            <IconButton
+              icon={editingId != null ? 'save' : 'add'}
+              label={editingId != null ? 'Enregistrer' : 'Créer'}
+              variant="primary"
+              onClick={() => void handleSave()}
+              disabled={saving}
+              loading={saving}
+            />
+          </div>
+        </Card>
+      )}
+
+      {selected && (
+        <div className="mt-4">
+          <UnavailabilityCalendar selected={selected} unavailabilities={data} />
+        </div>
+      )}
       {historyFor && (
         <UnavailabilityHistoryModal
           unavailability={historyFor}

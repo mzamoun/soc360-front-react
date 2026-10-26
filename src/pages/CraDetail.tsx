@@ -8,6 +8,7 @@ import { holidaysApi } from '../api/holidays'
 import { socHolidaysApi } from '../api/socHolidays'
 import { unavailabilityApi } from '../api/unavailability'
 import { ApiError } from '../api/client'
+import { documentsApi } from '../api/documents'
 import { useAsync } from '../lib/useAsync'
 import { useDynamicTranslate } from '../lib/useDynamicTranslate'
 import { usePagination } from '../lib/usePagination'
@@ -695,21 +696,20 @@ export function CraDetail({
     comment?: string | null
     documentId?: number | null
     documentComment?: string | null
-  }): Promise<boolean> {
-    if (!cra) return false
+  }): Promise<string | null> {
+    if (!cra) return tr('common.unexpectedError')
     setFormError(null)
     // Enregistrer le CRA avant de déclarer l'absence (les modifications en cours sont persistées).
     const saved = await doSave()
-    if (!saved) return false
+    if (!saved) return tr('common.unexpectedError')
     setSaving(true)
     try {
       const updated = await crasApi.declareAbsence(cra.id, request)
       setData(updated)
       onChange?.()
-      return true
+      return null
     } catch (err) {
-      setFormError(err instanceof ApiError ? err.message : tr('common.unexpectedError'))
-      return false
+      return err instanceof ApiError ? err.message : tr('common.unexpectedError')
     } finally {
       setSaving(false)
     }
@@ -1417,11 +1417,12 @@ export function CraDetail({
         <AbsenceModal
           monthStart={absenceMin}
           monthEnd={monthEnd}
+          consultantId={cra.consultantId}
           submitting={saving}
           onSubmit={async (request) => {
-            const ok = await handleDeclareAbsence(request)
-            if (ok) setAbsenceOpen(false)
-            return ok
+            const error = await handleDeclareAbsence(request)
+            if (!error) setAbsenceOpen(false)
+            return error
           }}
           onClose={() => setAbsenceOpen(false)}
         />
@@ -2038,12 +2039,14 @@ function SendBackModal({
 function AbsenceModal({
   monthStart,
   monthEnd,
+  consultantId,
   submitting,
   onSubmit,
   onClose,
 }: {
   monthStart: string
   monthEnd: string
+  consultantId?: number | null
   submitting?: boolean
   onSubmit: (request: {
     type: UnavailabilityType
@@ -2052,7 +2055,7 @@ function AbsenceModal({
     comment?: string | null
     documentId?: number | null
     documentComment?: string | null
-  }) => Promise<boolean>
+  }) => Promise<string | null>
   onClose: () => void
 }) {
   const [type, setType] = useState<UnavailabilityType>('CONGE_PAYE')
@@ -2078,7 +2081,7 @@ function AbsenceModal({
       return
     }
     setError(null)
-    await onSubmit({
+    const message = await onSubmit({
       type,
       startDate: start,
       endDate: end,
@@ -2086,16 +2089,29 @@ function AbsenceModal({
       documentId: document?.id ?? null,
       documentComment: document?.comment ?? null,
     })
+    if (message) setError(message)
+  }
+
+  async function handleCancel() {
+    if (document?.temporary) {
+      try {
+        await documentsApi.delete(document.id)
+      } catch {
+        // Document déjà supprimé : on ferme quand même la popup.
+      }
+    }
+    setDocument(null)
+    onClose()
   }
 
   return (
     <Modal
       open
       title={tr('CraDetail.declarer.une.absence')}
-      onClose={onClose}
+      onClose={() => void handleCancel()}
       footer={
         <>
-          <IconButton icon="cancel" label="Annuler" onClick={onClose} />
+          <IconButton icon="cancel" label="Annuler" onClick={() => void handleCancel()} />
           <Button className="w-auto" onClick={() => void submit()} disabled={submitting}>
             {submitting ? <Spinner className="border-white border-t-transparent" /> : null}
             {tr('CraDetail.declarer.une.absence')}
@@ -2144,7 +2160,11 @@ function AbsenceModal({
           <Textarea rows={2} value={comment} onChange={(e) => setComment(e.target.value)} />
         </Field>
         <Field label={tr('document.attachment.add')} id="CraDetail.absence.document">
-          <DocumentAttachment value={document} onChange={setDocument} />
+          <DocumentAttachment
+            value={document}
+            onChange={setDocument}
+            consultantId={consultantId}
+          />
         </Field>
         {error && <ErrorBlock message={error} />}
       </div>

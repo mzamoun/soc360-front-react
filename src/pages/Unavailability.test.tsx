@@ -19,6 +19,7 @@ const {
   summariesMock,
   findByConsultantMock,
   typesMock,
+  documentsDeleteMock,
   userMock,
 } = vi.hoisted(() => ({
   listMock: vi.fn(),
@@ -33,6 +34,7 @@ const {
   deleteMock: vi.fn(),
   summariesMock: vi.fn(),
   findByConsultantMock: vi.fn(),
+  documentsDeleteMock: vi.fn(),
   typesMock: vi.fn().mockResolvedValue([
     {
       id: 1,
@@ -98,6 +100,15 @@ vi.mock('../api/unavailabilityTypes', () => ({
     update: vi.fn(),
     disable: vi.fn(),
     remove: vi.fn(),
+  },
+}))
+
+vi.mock('../api/documents', () => ({
+  documentsApi: {
+    upload: vi.fn(),
+    delete: documentsDeleteMock,
+    download: vi.fn(),
+    previewUrl: vi.fn().mockResolvedValue('blob:preview'),
   },
 }))
 
@@ -231,6 +242,52 @@ describe('Unavailability', () => {
     expect(await screen.findByText(/Calendrier de l'indisponibilité/)).toBeInTheDocument()
     expect(findByConsultantMock).toHaveBeenCalledWith(10, 2026, 'CONGE')
     expect(findByConsultantMock).toHaveBeenCalledWith(10, 2026, 'CRA')
+  })
+
+  it('limite la largeur du commentaire à la somme Collaborateur + Type', async () => {
+    userMock.value = managerUser
+    listMock.mockResolvedValue([])
+    summariesMock.mockResolvedValue([])
+
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Nouvelle indisponibilité' }))
+    const textarea = screen.getByPlaceholderText(/Motif, remarques/)
+    const wrapper = textarea.parentElement?.parentElement as HTMLElement
+
+    expect(wrapper.style.maxWidth).toBe('28.75rem')
+  })
+
+  it('ouvre le formulaire d’édition en cliquant sur une ligne', async () => {
+    userMock.value = managerUser
+    listMock.mockResolvedValue([item({ status: 'DRAFT' })])
+    summariesMock.mockResolvedValue([])
+    findByConsultantMock.mockResolvedValue([])
+
+    renderPage()
+
+    fireEvent.click(await screen.findByText('Alice Martin'))
+
+    expect(
+      await screen.findByText('Modifier l’indisponibilité'),
+    ).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Enregistrer' })).toBeInTheDocument()
+  })
+
+  it('affiche le document joint quand on clique sur une indisponibilité', async () => {
+    userMock.value = baseUser
+    listMock.mockResolvedValue([
+      item({ documentId: 55, documentName: 'justificatif.pdf', documentComment: 'Arrêt' }),
+    ])
+    findByConsultantMock.mockResolvedValue([])
+
+    renderPage()
+
+    fireEvent.click(await screen.findByText('Alice Martin'))
+
+    expect((await screen.findAllByText('justificatif.pdf')).length).toBeGreaterThan(0)
+    expect(screen.getAllByRole('button', { name: 'Voir le document' }).length).toBeGreaterThan(0)
+    expect(screen.getAllByText(/Arrêt/).length).toBeGreaterThan(0)
   })
 
   it('affiche le motif de rejet lorsqu’on ouvre une indisponibilité rejetée', async () => {
@@ -622,6 +679,43 @@ describe('Unavailability', () => {
     expect(createMock.mock.calls[0][0].comment).toBeNull()
     expect(createMock.mock.calls[0][0].firstDay).toBe('ALL')
     expect(createMock.mock.calls[0][0].lastDay).toBe('ALL')
+  })
+
+  it('propose à un manager d’ajouter un document dans sa saisie d’indisponibilité', async () => {
+    userMock.value = { ...managerUser, hireDate: '2020-01-01' } as UserDto
+    listMock.mockResolvedValue([])
+    summariesMock.mockResolvedValue([{ id: 10, fullName: 'Alice Martin', socId: 5 }])
+
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Nouvelle indisponibilité' }))
+    expect(await screen.findByRole('button', { name: 'Ajouter un document' })).toBeEnabled()
+  })
+
+  it('supprime de la base le document retiré d’une indispo existante', async () => {
+    userMock.value = managerUser
+    listMock.mockResolvedValue([
+      item({
+        id: 1,
+        documentId: 55,
+        documentName: 'justificatif.pdf',
+        documentComment: 'Arrêt',
+      }),
+    ])
+    summariesMock.mockResolvedValue([])
+    findByConsultantMock.mockResolvedValue([])
+    updateMock.mockResolvedValue(item())
+    documentsDeleteMock.mockResolvedValue(undefined)
+
+    renderPage()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Éditer' }))
+    expect((await screen.findAllByText('justificatif.pdf')).length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Retirer le document' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Enregistrer' }))
+
+    await waitFor(() => expect(updateMock).toHaveBeenCalled())
+    await waitFor(() => expect(documentsDeleteMock).toHaveBeenCalledWith(55))
   })
 
   it('garde le filtre visible même sans indisponibilité', async () => {

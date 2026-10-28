@@ -107,6 +107,8 @@ export interface UserDto {
   buttonOkTextColor: string
   buttonNewColor: string
   buttonNewTextColor: string
+  buttonDisableColor: string
+  buttonDisableTextColor: string
   backgroundColor: string
   manager: ManagerInfo | null
 }
@@ -641,7 +643,7 @@ export type DurationUnit = 'DAYS' | 'MONTHS' | 'YEARS'
 
 export type CountType = 'OUVRE' | 'OUVRABLE' | 'CALENDAIRE' | 'MOIS' | 'ANNEE'
 
-export type UnavailabilityTypeStatus = 'ACTIVE' | 'DISABLED'
+export type UnavailabilityTypeStatus = 'ACTIVE' | 'DISABLED' | 'DELETED'
 
 export interface UnavailabilityTypeConfigDto {
   id: number

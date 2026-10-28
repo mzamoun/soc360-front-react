@@ -63,6 +63,20 @@ function durationFor(
   return days
 }
 
+function todayIso(): string {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+    now.getDate(),
+  ).padStart(2, '0')}`
+}
+
+function maxIso(...values: (string | null | undefined)[]): string | undefined {
+  return values
+    .filter((value): value is string => value != null && value !== '')
+    .sort()
+    .at(-1)
+}
+
 export function Unavailability() {
   const { user } = useAuth()
   const dt = useDynamicTranslate()
@@ -78,6 +92,7 @@ export function Unavailability() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
 
   const [showForm, setShowForm] = useState(false)
+  const [formReadOnly, setFormReadOnly] = useState(false)
   const [editingId, setEditingId] = useState<number | null>(null)
   const [formConsultantId, setFormConsultantId] = useState<number | null>(null)
   const [formType, setFormType] = useState<UnavailabilityType>('')
@@ -239,8 +254,11 @@ export function Unavailability() {
   const ownerId = user.consultantId ?? user.id ?? null
   const isOwner = (u: UnavailabilityDto) => ownerId != null && u.consultantId === ownerId
   const canEdit = (u: UnavailabilityDto) =>
-    isOwner(u) ? u.status === 'DRAFT' || u.status === 'REJECTED' : !isConsultant
-  const canSubmit = (u: UnavailabilityDto) => u.status === 'DRAFT' || u.status === 'REJECTED'
+    isOwner(u)
+      ? u.status === 'DRAFT' || u.status === 'REJECTED' || u.status === 'CANCELLED'
+      : !isConsultant
+  const canSubmit = (u: UnavailabilityDto) =>
+    u.status === 'DRAFT' || u.status === 'REJECTED' || u.status === 'CANCELLED'
   const canDelete = (u: UnavailabilityDto) => u.status === 'DRAFT' || u.status === 'REJECTED'
   const canCancel = (u: UnavailabilityDto) =>
     isOwner(u) && (u.status === 'SUBMITTED' || u.status === 'VALIDATED')
@@ -258,10 +276,23 @@ export function Unavailability() {
     ? (user?.hireDate ?? null)
     : (consultants.data?.find((c) => c.id === formConsultantId)?.hireDate ?? null)
 
+  const today = todayIso()
+  const formIsValid =
+    (isConsultant || formConsultantId != null) &&
+    formType.trim() !== '' &&
+    formStart !== '' &&
+    formEnd !== '' &&
+    formEnd >= formStart &&
+    (editingId != null || formStart >= today) &&
+    (!formHireDate || formStart >= formHireDate)
+
   function handleRowClick(u: UnavailabilityDto) {
     setSelectedId(u.id)
     if (canEdit(u)) {
       openEdit(u)
+    } else if (u.status === 'VALIDATED' && isOwner(u)) {
+      // Le propriétaire consulte sa propre indisponibilité validée en lecture seule.
+      openEdit(u, true)
     } else {
       setShowForm(false)
     }
@@ -272,14 +303,13 @@ export function Unavailability() {
       void dialog.error(tr('hireDate.required'))
       return
     }
-    const today = new Date()
-    const end = new Date(today)
-    end.setDate(end.getDate() + 7)
+    const today = todayIso()
     setEditingId(null)
-    setFormConsultantId(consultantFilter)
+    setFormReadOnly(false)
+    setFormConsultantId(user?.consultantId ?? user?.id ?? null)
     setFormType(typeOptions[0] ?? '')
-    setFormStart(today.toISOString().slice(0, 10))
-    setFormEnd(end.toISOString().slice(0, 10))
+    setFormStart(today)
+    setFormEnd(today)
     setFormComment('')
     setFormFirstDay('ALL')
     setFormLastDay('ALL')
@@ -289,9 +319,10 @@ export function Unavailability() {
     setShowForm(true)
   }
 
-  function openEdit(u: UnavailabilityDto) {
+  function openEdit(u: UnavailabilityDto, readOnly = false) {
     setSelectedId(u.id)
     setEditingId(u.id)
+    setFormReadOnly(readOnly)
     setFormConsultantId(u.consultantId)
     setFormType(u.type)
     setFormStart(u.startDate)
@@ -332,16 +363,22 @@ export function Unavailability() {
     setFormDocument(null)
     setRemovedDocumentIds([])
     setShowForm(false)
+    setFormReadOnly(false)
     setFormError(null)
   }
 
   async function handleSave() {
+    if (formReadOnly) return
     if (!formStart || !formEnd) {
       setFormError('Les dates de début et de fin sont obligatoires.')
       return
     }
     if (formStart > formEnd) {
       setFormError('La date de fin doit être postérieure ou égale à la date de début.')
+      return
+    }
+    if (editingId == null && formStart < today) {
+      setFormError(tr('Unavailability.date.passee'))
       return
     }
     if (formHireDate && formStart < formHireDate) {
@@ -717,8 +754,12 @@ export function Unavailability() {
 
       {showForm && (
         <Card className="mb-4 p-4">
-          <h3 id={editingId != null ? 'Unavailability.modifier.l.indisponibilite.form' : 'Unavailability.nouvelle.indisponibilite.form'} className="mb-3 text-sm font-semibold text-gray-900">
-            {editingId != null ? tr('Unavailability.modifier.l.indisponibilite') : tr('Unavailability.nouvelle.indisponibilite')}
+          <h3 id={formReadOnly ? 'Unavailability.detail.indisponibilite.form' : editingId != null ? 'Unavailability.modifier.l.indisponibilite.form' : 'Unavailability.nouvelle.indisponibilite.form'} className="mb-3 text-sm font-semibold text-gray-900">
+            {formReadOnly
+              ? tr('Unavailability.detail.indisponibilite')
+              : editingId != null
+                ? tr('Unavailability.modifier.l.indisponibilite')
+                : tr('Unavailability.nouvelle.indisponibilite')}
           </h3>
           <div className="flex flex-wrap items-start gap-[30px]">
             <div className="w-full max-w-[28.75rem] space-y-3">
@@ -731,6 +772,7 @@ export function Unavailability() {
                       value={formConsultantId ?? ''}
                       onChange={(e) => setFormConsultantId(e.target.value ? Number(e.target.value) : null)}
                       title={tr('Unavailability.consultant')}
+                      disabled={formReadOnly}
                     >
                       <option id="Unavailability.consultant.choisir" value="">{tr('Unavailability.choisir')}</option>
                       {consultants.data?.map((c) => (
@@ -744,7 +786,7 @@ export function Unavailability() {
               )}
               <div className="w-56 max-w-full">
                 <Field label={tr('Unavailability.type')} id="Unavailability.type">
-                  <Select id="Unavailability.type.select" value={formType} onChange={(e) => setFormType(e.target.value)}>
+                  <Select id="Unavailability.type.select" value={formType} disabled={formReadOnly} onChange={(e) => setFormType(e.target.value)}>
                     {!formType && <option id="Unavailability.type.choisir" value="">{tr('Unavailability.choisir')}</option>}
                     {formType && !typeOptions.includes(formType) && (
                       <option id="Unavailability.type.current" value={formType}>{unavailabilityTypeLabel(formType)}</option>
@@ -762,13 +804,19 @@ export function Unavailability() {
             <div className="flex flex-wrap items-start gap-3">
               <div className="w-44 max-w-full">
                 <Field label={tr('Unavailability.du')} id="Unavailability.du">
-                  <Input id="Unavailability.du.input" type="date" value={formStart} min={formHireDate ?? undefined}
+                  <Input id="Unavailability.du.input" type="date" value={formStart}
+                    title={tr('Unavailability.du')}
+                    min={maxIso(today, formHireDate)}
+                    disabled={formReadOnly}
                     onChange={(e) => changeDates(e.target.value, formEnd)} />
                 </Field>
               </div>
               <div className="w-44 max-w-full">
                 <Field label={tr('Unavailability.au')} id="Unavailability.au">
-                  <Input id="Unavailability.au.input" type="date" value={formEnd} min={formHireDate ?? formStart}
+                  <Input id="Unavailability.au.input" type="date" value={formEnd}
+                    title={tr('Unavailability.au')}
+                    min={maxIso(today, formStart, formHireDate)}
+                    disabled={formReadOnly}
                     onChange={(e) => changeDates(formStart, e.target.value)} />
                 </Field>
               </div>
@@ -781,6 +829,7 @@ export function Unavailability() {
                     <Select
                       id="Unavailability.demiJournee.select"
                       value={formFirstDay}
+                      disabled={formReadOnly}
                       onChange={(e) => {
                         const value = e.target.value as DayPart
                         setFormFirstDay(value)
@@ -800,6 +849,7 @@ export function Unavailability() {
                       <Select
                         id="Unavailability.debutDemiJournee.select"
                         value={formFirstDay}
+                        disabled={formReadOnly}
                         onChange={(e) => setFormFirstDay(e.target.value as DayPart)}
                       >
                         <option id="Unavailability.debutDemiJournee.option.ALL" value="ALL">Journée entière</option>
@@ -812,6 +862,7 @@ export function Unavailability() {
                       <Select
                         id="Unavailability.finDemiJournee.select"
                         value={formLastDay}
+                        disabled={formReadOnly}
                         onChange={(e) => setFormLastDay(e.target.value as DayPart)}
                       >
                         <option id="Unavailability.finDemiJournee.option.ALL" value="ALL">Journée entière</option>
@@ -832,6 +883,7 @@ export function Unavailability() {
                   id="Unavailability.commentaire.textarea"
                   rows={1}
                   value={formComment}
+                  disabled={formReadOnly}
                   onChange={(e) => setFormComment(e.target.value)}
                   placeholder={tr('Unavailability.motif.remarques')}
                 />
@@ -851,6 +903,7 @@ export function Unavailability() {
                   }}
                   socId={typesSocId}
                   consultantId={isConsultant ? (user?.consultantId ?? user?.id ?? null) : formConsultantId}
+                  disabled={formReadOnly}
                 />
               </Field>
             </div>
@@ -862,6 +915,11 @@ export function Unavailability() {
             </div>
           )}
 
+          {formReadOnly && (
+            <p id="Unavailability.lecture.seule" className="mt-3 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-800">
+              {tr('Unavailability.lecture.seule')}
+            </p>
+          )}
           {formError && (
             <div className="mt-3">
               <Alert id="Unavailability.form.error" variant="error">{formError}</Alert>
@@ -870,18 +928,20 @@ export function Unavailability() {
           <div className="mt-4 flex items-center justify-end gap-2">
             <IconButton
               icon="cancel"
-              label={tr('Unavailability.annuler')}
+              label={formReadOnly ? tr('common.close') : tr('Unavailability.annuler')}
               onClick={() => void closeForm()}
               disabled={saving} id="Unavailability.annuler" />
-            <IconButton
-              id={editingId != null ? 'Unavailability.save' : 'Unavailability.create'}
-              icon={editingId != null ? 'save' : 'add'}
-              label={editingId != null ? 'Enregistrer' : 'Créer'}
-              variant="primary"
-              onClick={() => void handleSave()}
-              disabled={saving}
-              loading={saving}
-            />
+            {!formReadOnly && (
+              <IconButton
+                id={editingId != null ? 'Unavailability.save' : 'Unavailability.create'}
+                icon={editingId != null ? 'save' : 'add'}
+                label={editingId != null ? 'Enregistrer' : 'Créer'}
+                variant="primary"
+                onClick={() => void handleSave()}
+                disabled={saving || !formIsValid}
+                loading={saving}
+              />
+            )}
           </div>
         </Card>
       )}

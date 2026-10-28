@@ -19,6 +19,9 @@ const {
   summariesMock,
   userMock,
   ocrImageTextMock,
+  documentUploadMock,
+  documentDownloadMock,
+  documentPreviewUrlMock,
 } = vi.hoisted(() => ({
   findBySocYearMock: vi.fn(),
   findByConsultantYearMock: vi.fn(),
@@ -32,6 +35,9 @@ const {
   summariesMock: vi.fn(),
   userMock: { value: null as unknown as UserDto },
   ocrImageTextMock: vi.fn(),
+  documentUploadMock: vi.fn(),
+  documentDownloadMock: vi.fn(),
+  documentPreviewUrlMock: vi.fn(),
 }))
 
 vi.mock('../auth/AuthContext', () => ({
@@ -64,6 +70,14 @@ vi.mock('../api/noteFrais', () => ({
 
 vi.mock('../api/consultants', () => ({
   consultantsApi: { summaries: summariesMock },
+}))
+
+vi.mock('../api/documents', () => ({
+  documentsApi: {
+    upload: documentUploadMock,
+    download: documentDownloadMock,
+    previewUrl: documentPreviewUrlMock,
+  },
 }))
 
 vi.mock('../lib/ocr', () => ({
@@ -144,7 +158,11 @@ function stubFixedNow() {
 
 afterEach(() => {
   vi.unstubAllGlobals()
+  vi.clearAllMocks()
   ocrImageTextMock.mockReset()
+  documentUploadMock.mockReset()
+  documentDownloadMock.mockReset()
+  documentPreviewUrlMock.mockReset()
   userMock.value = null as unknown as UserDto
 })
 
@@ -258,6 +276,88 @@ describe('NoteFraisList', () => {
     await waitFor(() => expect(deleteMock).toHaveBeenCalledWith(1))
   })
 
+  it('masque les libellés obligatoires quand tous les champs sont remplis', async () => {
+    userMock.value = managerUser
+    findBySocYearMock.mockResolvedValue([])
+    totalsByMonthMock.mockResolvedValue({})
+    totalsByCategoryMock.mockResolvedValue({})
+    summariesMock.mockResolvedValue([])
+    documentUploadMock.mockResolvedValue({ id: 77, name: 'facture.png' })
+    ocrImageTextMock.mockResolvedValue('')
+
+    renderList()
+    fireEvent.click(screen.getByRole('button', { name: 'Nouvelle note de frais' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(document.getElementById('NoteFraisList.justificatif.obligatoire')).not.toBeNull()
+    expect(document.getElementById('NoteFraisList.champs.obligatoires')).not.toBeNull()
+
+    fireEvent.change(within(dialog).getByLabelText(/Joindre une facture/), {
+      target: { files: [new File(['fake'], 'facture.png', { type: 'image/png' })] },
+    })
+    await waitFor(() =>
+      expect(within(dialog).getByLabelText(/Joindre une facture/)).toBeDisabled(),
+    )
+    fireEvent.change(within(dialog).getByPlaceholderText('Nom enseigne'), {
+      target: { value: 'SNCF' },
+    })
+    fireEvent.change(within(dialog).getByPlaceholderText('Libellé / action'), {
+      target: { value: 'Train' },
+    })
+    fireEvent.change(within(dialog).getByPlaceholderText('Adresse'), {
+      target: { value: '1 rue de Paris' },
+    })
+    fireEvent.change(within(dialog).getByPlaceholderText('Montant HT €'), {
+      target: { value: '45' },
+    })
+    fireEvent.change(within(dialog).getByPlaceholderText('Montant TTC €'), {
+      target: { value: '55' },
+    })
+
+    await waitFor(() => {
+      expect(document.getElementById('NoteFraisList.justificatif.obligatoire')).toBeNull()
+      expect(document.getElementById('NoteFraisList.champs.obligatoires')).toBeNull()
+    })
+  })
+
+  it('affiche l’aperçu du document en modification', async () => {
+    userMock.value = managerUser
+    findBySocYearMock.mockResolvedValue([
+      nf({ documentId: 77, documentName: 'facture.png' }),
+    ])
+    totalsByMonthMock.mockResolvedValue({})
+    totalsByCategoryMock.mockResolvedValue({})
+    summariesMock.mockResolvedValue([])
+    documentPreviewUrlMock.mockResolvedValue('blob:preview')
+
+    renderList()
+    fireEvent.click(await screen.findByRole('button', { name: 'Modifier' }))
+
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(77))
+    expect(within(dialog).getByAltText('Aperçu de la facture')).toHaveAttribute(
+      'src',
+      'blob:preview',
+    )
+    expect(within(dialog).getByRole('button', { name: 'Télécharger le justificatif' })).toBeInTheDocument()
+  })
+
+  it('pré-sélectionne le collaborateur connecté', async () => {
+    userMock.value = managerUser
+    findBySocYearMock.mockResolvedValue([])
+    totalsByMonthMock.mockResolvedValue({})
+    totalsByCategoryMock.mockResolvedValue({})
+    summariesMock.mockResolvedValue([])
+
+    renderList()
+    fireEvent.click(screen.getByRole('button', { name: 'Nouvelle note de frais' }))
+
+    const dialog = await screen.findByRole('dialog')
+    const select = within(dialog).getAllByRole('combobox')[0]
+    expect(select).toHaveValue('1')
+    expect(within(select).getByRole('option', { name: 'M Manager' })).toBeInTheDocument()
+  })
+
   it('crée une note de frais depuis le formulaire', async () => {
     userMock.value = managerUser
     findBySocYearMock.mockResolvedValue([])
@@ -267,6 +367,8 @@ describe('NoteFraisList', () => {
       { id: 10, fullName: 'Alice Martin', position: 'Consultante', email: 'alice@soc.fr' },
     ])
     createMock.mockResolvedValue(nf())
+    documentUploadMock.mockResolvedValue({ id: 77, name: 'facture.png' })
+    ocrImageTextMock.mockResolvedValue('')
     stubFixedNow()
 
     renderList()
@@ -276,15 +378,31 @@ describe('NoteFraisList', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Nouvelle note de frais' }))
 
     const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText(/Joindre une facture/), {
+      target: { files: [new File(['fake'], 'facture.png', { type: 'image/png' })] },
+    })
+    await waitFor(() => expect(documentUploadMock).toHaveBeenCalled())
+    await within(dialog).findByText('facture.png')
     const selects = within(dialog).getAllByRole('combobox')
     fireEvent.change(selects[0], { target: { value: '10' } })
+    fireEvent.change(within(dialog).getByPlaceholderText('Nom enseigne'), {
+      target: { value: 'SNCF' },
+    })
     fireEvent.change(within(dialog).getByPlaceholderText('Libellé / action'), {
       target: { value: 'Train' },
+    })
+    fireEvent.change(within(dialog).getByPlaceholderText('Adresse'), {
+      target: { value: '1 rue de Paris' },
     })
     fireEvent.change(within(dialog).getByPlaceholderText('Montant HT €'), {
       target: { value: '45' },
     })
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Créer' }))
+    fireEvent.change(within(dialog).getByPlaceholderText('Montant TTC €'), {
+      target: { value: '55' },
+    })
+    const createButton = within(dialog).getByRole('button', { name: 'Créer' })
+    await waitFor(() => expect(createButton).toBeEnabled())
+    fireEvent.click(createButton)
 
     await waitFor(() =>
       expect(createMock).toHaveBeenCalledWith({
@@ -297,16 +415,105 @@ describe('NoteFraisList', () => {
             category: 'Déplacement',
             label: 'Train',
             montantHT: 45,
-            montantTTC: 0,
-            enseigne: null,
-            adresse: null,
+            montantTTC: 55,
+            enseigne: 'SNCF',
+            adresse: '1 rue de Paris',
             reimbursed: false,
             comment: null,
           },
         ],
         infosFacture: null,
+        documentId: 77,
+        documentName: 'facture.png',
       }),
     )
+  })
+
+  it('désactive la création tant que le justificatif manque', async () => {
+    userMock.value = managerUser
+    findBySocYearMock.mockResolvedValue([])
+    totalsByMonthMock.mockResolvedValue({})
+    totalsByCategoryMock.mockResolvedValue({})
+    summariesMock.mockResolvedValue([
+      { id: 10, fullName: 'Alice Martin', position: 'Consultante', email: 'alice@soc.fr' },
+    ])
+
+    renderList()
+    fireEvent.click(screen.getByRole('button', { name: 'Nouvelle note de frais' }))
+
+    const dialog = await screen.findByRole('dialog')
+    const selects = within(dialog).getAllByRole('combobox')
+    fireEvent.change(selects[0], { target: { value: '10' } })
+    fireEvent.change(within(dialog).getByPlaceholderText('Libellé / action'), {
+      target: { value: 'Train' },
+    })
+    fireEvent.change(within(dialog).getByPlaceholderText('Montant HT €'), {
+      target: { value: '45' },
+    })
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole('button', { name: 'Créer' })).toBeDisabled(),
+    )
+    expect(createMock).not.toHaveBeenCalled()
+  })
+
+  it('téléverse le justificatif et propose son téléchargement', async () => {
+    userMock.value = managerUser
+    findBySocYearMock.mockResolvedValue([])
+    totalsByMonthMock.mockResolvedValue({})
+    totalsByCategoryMock.mockResolvedValue({})
+    summariesMock.mockResolvedValue([])
+    documentUploadMock.mockResolvedValue({ id: 77, name: 'facture.png' })
+    documentDownloadMock.mockResolvedValue(undefined)
+    ocrImageTextMock.mockResolvedValue('')
+
+    renderList()
+    fireEvent.click(screen.getByRole('button', { name: 'Nouvelle note de frais' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByTitle('Joindre une facture (image / PDF)')).toHaveTextContent('+')
+    const fileInput = within(dialog).getByLabelText(/Joindre une facture/)
+    fireEvent.change(fileInput, {
+      target: { files: [new File(['fake'], 'facture.png', { type: 'image/png' })] },
+    })
+
+    await waitFor(() => expect(documentUploadMock).toHaveBeenCalled())
+    await waitFor(() => expect(fileInput).toBeDisabled())
+    const download = await within(dialog).findByRole('button', {
+      name: 'Télécharger le justificatif',
+    })
+    fireEvent.click(download)
+    await waitFor(() => expect(documentDownloadMock).toHaveBeenCalledWith(77, 'facture.png'))
+  })
+
+  it('désactive la création si une ligne est incomplète', async () => {
+    userMock.value = managerUser
+    findBySocYearMock.mockResolvedValue([])
+    totalsByMonthMock.mockResolvedValue({})
+    totalsByCategoryMock.mockResolvedValue({})
+    summariesMock.mockResolvedValue([
+      { id: 10, fullName: 'Alice Martin', position: 'Consultante', email: 'alice@soc.fr' },
+    ])
+    documentUploadMock.mockResolvedValue({ id: 77, name: 'facture.png' })
+    ocrImageTextMock.mockResolvedValue('')
+
+    renderList()
+    fireEvent.click(screen.getByRole('button', { name: 'Nouvelle note de frais' }))
+
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText(/Joindre une facture/), {
+      target: { files: [new File(['fake'], 'facture.png', { type: 'image/png' })] },
+    })
+    await within(dialog).findByText('facture.png')
+    const selects = within(dialog).getAllByRole('combobox')
+    fireEvent.change(selects[0], { target: { value: '10' } })
+    fireEvent.change(within(dialog).getByPlaceholderText('Libellé / action'), {
+      target: { value: 'Train' },
+    })
+    await waitFor(() =>
+      expect(within(dialog).getByRole('button', { name: 'Créer' })).toBeDisabled(),
+    )
+    expect(createMock).not.toHaveBeenCalled()
   })
 
   it('affiche l’erreur API dans un bloc d’erreur', async () => {
@@ -327,6 +534,7 @@ describe('NoteFraisList', () => {
     totalsByMonthMock.mockResolvedValue({})
     totalsByCategoryMock.mockResolvedValue({})
     summariesMock.mockResolvedValue([])
+    documentUploadMock.mockResolvedValue({ id: 77, name: 'facture.png' })
     ocrImageTextMock.mockResolvedValue('Restaurant McDo 25,50 € le 12/03/2026')
 
     renderList()
@@ -347,15 +555,16 @@ describe('NoteFraisList', () => {
     ).toHaveValue('Restaurant McDo 25,50 € le 12/03/2026')
   })
 
-  it('ajoute une nouvelle ligne pour chaque facture OCR dans la même période', async () => {
+  it('désactive le bouton + après le premier justificatif', async () => {
     userMock.value = managerUser
     findBySocYearMock.mockResolvedValue([])
     totalsByMonthMock.mockResolvedValue({})
     totalsByCategoryMock.mockResolvedValue({})
     summariesMock.mockResolvedValue([])
-    ocrImageTextMock
-      .mockResolvedValueOnce('ALLO PIZZA DI NAPOLI\n26 RUE DE BOISSY\n91480 QUINCY SOUS SENART\n16/01/2025 20:44\nNET A PAYER TTC EURO 25.00')
-      .mockResolvedValueOnce('RESTAURATION DE PASSION\n2 Bis AVENUE DE QUINCY\n77380 COMBS LA VILLE\nMardi 14 Janvier 2025\n2 repas 34,00 €\nPAYÉ 34,00 «')
+    documentUploadMock.mockResolvedValue({ id: 77, name: 'facture1.png' })
+    ocrImageTextMock.mockResolvedValue(
+      'ALLO PIZZA DI NAPOLI\n26 RUE DE BOISSY\n91480 QUINCY SOUS SENART\n16/01/2025 20:44\nNET A PAYER TTC EURO 25.00',
+    )
 
     renderList()
     fireEvent.click(screen.getByRole('button', { name: 'Nouvelle note de frais' }))
@@ -365,22 +574,18 @@ describe('NoteFraisList', () => {
     fireEvent.change(fileInput, {
       target: { files: [new File(['fake'], 'facture1.png', { type: 'image/png' })] },
     })
+
+    await waitFor(() => expect(fileInput).toBeDisabled())
+    expect(within(dialog).getAllByPlaceholderText('Montant TTC €')).toHaveLength(1)
+    expect(within(dialog).getByPlaceholderText('Montant TTC €')).toHaveValue(25)
+    expect(within(dialog).getByPlaceholderText('Nom enseigne')).toHaveValue(
+      'ALLO PIZZA DI NAPOLI',
+    )
+
     fireEvent.change(fileInput, {
       target: { files: [new File(['fake'], 'facture2.png', { type: 'image/png' })] },
     })
-
-    await waitFor(() =>
-      expect(within(dialog).getAllByPlaceholderText('Montant TTC €')).toHaveLength(2),
-    )
-    const amounts = within(dialog).getAllByPlaceholderText('Montant TTC €')
-    expect(amounts[0]).toHaveValue(25)
-    expect(amounts[1]).toHaveValue(34)
-    expect(within(dialog).getAllByPlaceholderText('Nom enseigne')[0]).toHaveValue(
-      'ALLO PIZZA DI NAPOLI',
-    )
-    expect(within(dialog).getAllByPlaceholderText('Nom enseigne')[1]).toHaveValue(
-      'RESTAURATION DE PASSION',
-    )
+    expect(within(dialog).getAllByPlaceholderText('Montant TTC €')).toHaveLength(1)
   })
 
   it('affiche une erreur quand l’OCR ne trouve pas de texte dans l’image', async () => {
@@ -389,6 +594,7 @@ describe('NoteFraisList', () => {
     totalsByMonthMock.mockResolvedValue({})
     totalsByCategoryMock.mockResolvedValue({})
     summariesMock.mockResolvedValue([])
+    documentUploadMock.mockResolvedValue({ id: 77, name: 'facture.png' })
     ocrImageTextMock.mockResolvedValue('')
 
     renderList()

@@ -1,8 +1,9 @@
 import { tr } from '../i18n/translate'
-import { useState, type ChangeEvent, type FormEvent } from 'react'
+import { useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { noteFraisApi } from '../api/noteFrais'
 import { consultantsApi } from '../api/consultants'
+import { documentsApi } from '../api/documents'
 import { isImageFile, ocrImageText } from '../lib/ocr'
 import { parseReceipt } from '../lib/receipt'
 import { ApiError } from '../api/client'
@@ -124,8 +125,23 @@ export function NoteFraisList() {
     [user?.socId, isConsultant, year],
   )
 
+  const selfCollaboratorId = user?.consultantId ?? user?.id ?? null
+  const collaboratorOptions = useMemo(() => {
+    const list = summaries ?? []
+    if (!selfCollaboratorId || list.some((c) => c.id === selfCollaboratorId)) return list
+    return [
+      {
+        id: selfCollaboratorId,
+        fullName: [user?.firstName, user?.lastName].filter(Boolean).join(' '),
+        position: '',
+        email: user?.email ?? '',
+        hireDate: user?.hireDate ?? null,
+      },
+      ...list,
+    ]
+  }, [summaries, selfCollaboratorId, user?.firstName, user?.lastName, user?.email, user?.hireDate])
   const [form, setForm] = useState<FormState>({
-    consultantId: isConsultant ? String(user?.consultantId ?? '') : '',
+    consultantId: String(selfCollaboratorId ?? ''),
     month: now.getMonth() + 1,
     year,
     lines: [newLine()],
@@ -138,12 +154,17 @@ export function NoteFraisList() {
   const [attachmentUrl, setAttachmentUrl] = useState<string | null>(null)
   const [attachmentName, setAttachmentName] = useState<string | null>(null)
   const [ocrPending, setOcrPending] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [attachmentDocumentId, setAttachmentDocumentId] = useState<number | null>(null)
+  const previewRequest = useRef(0)
 
   if (!user) return null
 
   function openCreate() {
+    previewRequest.current += 1
+    if (attachmentUrl) URL.revokeObjectURL(attachmentUrl)
     setForm({
-      consultantId: isConsultant ? String(user.consultantId ?? '') : '',
+      consultantId: String(selfCollaboratorId ?? ''),
       month: now.getMonth() + 1,
       year,
       lines: [newLine()],
@@ -153,11 +174,16 @@ export function NoteFraisList() {
     setFormError(null)
     setAttachmentUrl(null)
     setAttachmentName(null)
+    setAttachmentDocumentId(null)
     setOcrPending(false)
+    setUploading(false)
     setModalOpen(true)
   }
 
-  function openEdit(nf: NoteFraisDto) {
+  async function openEdit(nf: NoteFraisDto) {
+    const requestId = previewRequest.current + 1
+    previewRequest.current = requestId
+    if (attachmentUrl) URL.revokeObjectURL(attachmentUrl)
     setForm({
       consultantId: String(nf.consultantId),
       month: nf.month,
@@ -181,20 +207,44 @@ export function NoteFraisList() {
     setEditing(nf)
     setFormError(null)
     setAttachmentUrl(null)
-    setAttachmentName(null)
+    setAttachmentName(nf.documentName ?? null)
+    setAttachmentDocumentId(nf.documentId ?? null)
     setOcrPending(false)
+    setUploading(false)
     setModalOpen(true)
+    if (nf.documentId) {
+      try {
+        const url = await documentsApi.previewUrl(nf.documentId)
+        if (requestId !== previewRequest.current) {
+          URL.revokeObjectURL(url)
+          return
+        }
+        setAttachmentUrl(url)
+      } catch {
+        // Le bouton de téléchargement reste disponible si l'aperçu échoue.
+      }
+    }
   }
 
   async function handleFile(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0]
     if (!file) return
-    if (attachmentUrl) URL.revokeObjectURL(attachmentUrl)
-    setAttachmentUrl(URL.createObjectURL(file))
-    setAttachmentName(file.name)
     setFormError(null)
-
+    setUploading(true)
     try {
+      // 1. Le justificatif est d'abord téléversé (il est obligatoire).
+      const document = await documentsApi.upload(file, {
+        category: 'JUSTIFICATIF',
+        consultantId: form.consultantId ? Number(form.consultantId) : user?.consultantId ?? undefined,
+        socId: user?.socId ?? undefined,
+        description: 'Justificatif de note de frais',
+      })
+      if (attachmentUrl) URL.revokeObjectURL(attachmentUrl)
+      setAttachmentDocumentId(document.id)
+      setAttachmentName(document.name)
+      setAttachmentUrl(URL.createObjectURL(file))
+
+      // 2. Le texte du document est ensuite placé dans la zone de texte prévue.
       let text = ''
       if (isImageFile(file.name)) {
         setOcrPending(true)
@@ -208,6 +258,7 @@ export function NoteFraisList() {
         text = result.text ?? ''
       }
       if (text.trim()) {
+        // 3. Puis on reconnaît un maximum de valeurs pour pré-remplir le formulaire.
         setForm((prev) => ({
           ...prev,
           infosFacture: text,
@@ -222,6 +273,8 @@ export function NoteFraisList() {
       }
     } catch (err) {
       setFormError(err instanceof ApiError ? err.message : tr('common.unexpectedError'))
+    } finally {
+      setUploading(false)
     }
   }
 
@@ -229,15 +282,35 @@ export function NoteFraisList() {
     e.preventDefault()
     setSubmitting(true)
     setFormError(null)
+    if (!attachmentDocumentId) {
+      setFormError(tr('NoteFraisList.justificatif.obligatoire.erreur'))
+      setSubmitting(false)
+      return
+    }
+    const requestedLines = form.lines.filter((l) => !isBlankLine(l))
+    const invalidLine = requestedLines.find(
+      (l) =>
+        !l.enseigne.trim() ||
+        !l.category.trim() ||
+        !l.label.trim() ||
+        !l.adresse.trim() ||
+        !l.date ||
+        Number(l.montantHT) <= 0 ||
+        Number(l.montantTTC) <= 0,
+    )
+    if (invalidLine) {
+      setFormError(tr('NoteFraisList.champs.obligatoires'))
+      setSubmitting(false)
+      return
+    }
     try {
       const request = {
         consultantId: Number(form.consultantId),
         month: form.month,
         year: form.year,
-        lines: form.lines
-          .filter((l) => l.label.trim() || l.montantHT || l.montantTTC)
+        lines: requestedLines
           .map((l) => ({
-            date: l.date || new Date().toISOString().slice(0, 10),
+            date: l.date,
             category: l.category,
             label: l.label.trim() || 'Dépense',
             montantHT: Number(l.montantHT) || 0,
@@ -248,6 +321,8 @@ export function NoteFraisList() {
             comment: l.comment || null,
           })),
         infosFacture: form.infosFacture || null,
+        documentId: attachmentDocumentId,
+        documentName: attachmentName,
       }
       if (request.lines.length === 0) {
         setFormError('Ajoutez au moins une ligne')
@@ -291,6 +366,24 @@ export function NoteFraisList() {
     }
   }
 
+  const filledLines = form.lines.filter((l) => !isBlankLine(l))
+  const requiredFieldsCompleted =
+    attachmentDocumentId != null &&
+    filledLines.length > 0 &&
+    filledLines.every(
+      (l) =>
+        l.enseigne.trim() &&
+        l.category.trim() &&
+        l.label.trim() &&
+        l.adresse.trim() &&
+        l.date &&
+        Number(l.montantHT) > 0 &&
+        Number(l.montantTTC) > 0,
+    )
+
+  const formIsValid =
+    requiredFieldsCompleted && (isConsultant || form.consultantId.trim() !== '')
+
   const totalYear = (data ?? []).reduce((sum, nf) => sum + nf.totalAmount, 0)
   const pendingCount = (data ?? []).filter((nf) => nf.status === 'SUBMITTED').length
 
@@ -307,6 +400,7 @@ export function NoteFraisList() {
             <RefreshButton onClick={reload} />
             <Select
               id="NoteFraisList.year.select"
+              title={tr('NoteFraisList.annee')}
               className="w-auto"
               value={year}
               onChange={(e) => setYear(Number(e.target.value))}
@@ -471,7 +565,7 @@ export function NoteFraisList() {
         footer={
           <>
             <IconButton icon="cancel" label={tr('common.cancel')} onClick={() => setModalOpen(false)} id="common.cancel" />
-            <IconButton id={editing ? 'common.save' : 'common.create'} icon={editing ? 'save' : 'add'} label={editing ? tr('common.save') : tr('common.create')} variant="primary" className="w-auto" onClick={handleSubmit as never} disabled={submitting} loading={submitting} />
+            <IconButton id={editing ? 'common.save' : 'common.create'} icon={editing ? 'save' : 'add'} label={editing ? tr('common.save') : tr('common.create')} variant="primary" className="w-auto" onClick={handleSubmit as never} disabled={submitting || uploading || !formIsValid} loading={submitting || uploading} />
           </>
         }
       >
@@ -481,16 +575,93 @@ export function NoteFraisList() {
               {formError}
             </div>
           )}
+          <div id="NoteFraisList.justificatif" className="rounded-lg border-2 border-brand-200 bg-brand-50/40 p-4">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <p id="NoteFraisList.justificatif.obligatoire.titre" className="text-sm font-semibold text-gray-900">
+                {tr('NoteFraisList.justificatif.obligatoire.titre')}
+              </p>
+              {!requiredFieldsCompleted && (
+                <span id="NoteFraisList.justificatif.obligatoire" className="text-xs font-normal text-red-600">
+                  {tr('NoteFraisList.justificatif.obligatoire')}
+                </span>
+              )}
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <label
+                id="NoteFraisList.joindre.une.facture.image.pdf"
+                title={tr('NoteFraisList.joindre.une.facture.image.pdf')}
+                aria-disabled={attachmentDocumentId != null || uploading}
+                className={`inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-base font-semibold text-gray-700 transition ${attachmentDocumentId != null || uploading ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-gray-50'}`}
+              >
+                +
+                <input
+                  id="NoteFraisList.joindre.une.facture.image.pdf.file"
+                  type="file"
+                  accept="image/*,application/pdf"
+                  aria-label={tr('NoteFraisList.joindre.une.facture.image.pdf')}
+                  disabled={attachmentDocumentId != null || uploading}
+                  className="hidden"
+                  onChange={handleFile}
+                />
+              </label>
+              {attachmentName && (
+                <span id="NoteFraisList.attachment.name" className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
+                  <span id="NoteFraisList.attachment.name.value">{attachmentName}</span>
+                  {attachmentDocumentId != null && (
+                    <button
+                      id="NoteFraisList.justificatif.telecharger"
+                      type="button"
+                      onClick={() => void documentsApi.download(attachmentDocumentId, attachmentName ?? 'justificatif')}
+                      className="text-brand-600 hover:text-brand-700"
+                    >
+                      {tr('NoteFraisList.justificatif.telecharger')}
+                    </button>
+                  )}
+                  <button
+                    id="NoteFraisList.retirer"
+                    type="button"
+                    onClick={() => {
+                      if (attachmentUrl) URL.revokeObjectURL(attachmentUrl)
+                      setAttachmentUrl(null)
+                      setAttachmentName(null)
+                      setAttachmentDocumentId(null)
+                    }}
+                    className="text-red-600 hover:text-red-800"
+                  >
+                    {tr('NoteFraisList.retirer')}
+                  </button>
+                </span>
+              )}
+            </div>
+            {(uploading || ocrPending) && (
+              <p id="NoteFraisList.lecture.de.la.facture.en.cours.ocr" className="mt-2 text-sm text-brand-700">
+                {uploading
+                  ? tr('NoteFraisList.justificatif.televersement')
+                  : tr('NoteFraisList.lecture.de.la.facture.en.cours.ocr')}
+              </p>
+            )}
+            {attachmentUrl && (
+              <div className="mt-3 overflow-hidden rounded-lg border border-gray-200">
+                {attachmentName && isImageFile(attachmentName) ? (
+                  <img id="NoteFraisList.apercu.image" src={attachmentUrl} alt={tr('NoteFraisList.apercu.de.la.facture')} className="max-h-72 w-full object-contain" />
+                ) : (
+                  <iframe id="NoteFraisList.apercu.document" src={attachmentUrl} title={tr('NoteFraisList.apercu.du.document')} className="h-72 w-full" />
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             {!isConsultant && (
               <Field label={tr('NoteFraisList.consultant')} id="NoteFraisList.consultant">
                 <Select
                   id="NoteFraisList.consultant.select"
+                  title={tr('NoteFraisList.consultant')}
                   value={form.consultantId}
                   onChange={(e) => setForm({ ...form, consultantId: e.target.value })}
                 >
                   <option id="NoteFraisList.selectionner" value="">{tr('NoteFraisList.selectionner')}</option>
-                  {(summaries ?? []).map((c) => (
+                  {collaboratorOptions.map((c) => (
                     <option id={`NoteFraisList.consultant.option.${c.id}`} key={c.id} value={c.id}>
                       {c.fullName}
                     </option>
@@ -501,6 +672,7 @@ export function NoteFraisList() {
             <Field label={tr('NoteFraisList.mois')} id="NoteFraisList.mois">
               <Select
                 id="NoteFraisList.mois.select"
+                title={tr('NoteFraisList.mois')}
                 value={form.month}
                 onChange={(e) => setForm({ ...form, month: Number(e.target.value) })}
               >
@@ -514,6 +686,7 @@ export function NoteFraisList() {
             <Field label={tr('NoteFraisList.annee')} id="NoteFraisList.annee">
               <Select
                 id="NoteFraisList.annee.select"
+                title={tr('NoteFraisList.annee')}
                 value={form.year}
                 onChange={(e) => setForm({ ...form, year: Number(e.target.value) })}
               >
@@ -528,7 +701,12 @@ export function NoteFraisList() {
 
           <div>
             <div className="mb-2 flex items-center justify-between">
-              <p id="NoteFraisList.lignes.de.depenses" className="text-sm font-medium text-gray-700">{tr('NoteFraisList.lignes.de.depenses')}</p>
+              <div>
+                <p id="NoteFraisList.lignes.de.depenses" className="text-sm font-medium text-gray-700">{tr('NoteFraisList.lignes.de.depenses')}</p>
+                {!requiredFieldsCompleted && (
+                  <p id="NoteFraisList.champs.obligatoires" className="text-xs text-red-600">{tr('NoteFraisList.champs.obligatoires')}</p>
+                )}
+              </div>
               <span id="NoteFraisList.total.2" className="text-sm text-gray-500">
                 {tr('NoteFraisList.total.2')} {formatMoney(form.lines.reduce((s, l) => s + lineAmount(l), 0))}
               </span>
@@ -539,6 +717,9 @@ export function NoteFraisList() {
                   <Input
                     id={`NoteFraisList.line.${i}.enseigne`}
                     placeholder={tr('NoteFraisList.nom.enseigne')}
+                    title={tr('NoteFraisList.nom.enseigne')}
+                    required
+                    aria-required="true"
                     className="sm:col-span-2"
                     value={line.enseigne}
                     onChange={(e) =>
@@ -548,20 +729,28 @@ export function NoteFraisList() {
                       })
                     }
                   />
-                  <Input
-                    id={`NoteFraisList.line.${i}.date`}
-                    type="date"
-                    className="sm:col-span-2"
-                    value={line.date}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        lines: form.lines.map((l, j) => (j === i ? { ...l, date: e.target.value } : l)),
-                      })
-                    }
-                  />
+                  <div className="sm:col-span-2 min-w-0">
+                    <Input
+                      id={`NoteFraisList.line.${i}.date`}
+                      type="date"
+                      title={tr('NoteFraisList.date')}
+                      required
+                      aria-required="true"
+                      className="w-full"
+                      value={line.date}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          lines: form.lines.map((l, j) => (j === i ? { ...l, date: e.target.value } : l)),
+                        })
+                      }
+                    />
+                  </div>
                   <Select
                     id={`NoteFraisList.line.${i}.category`}
+                    title={tr('NoteFraisList.categorie')}
+                    required
+                    aria-required="true"
                     className="sm:col-span-2"
                     value={line.category}
                     onChange={(e) =>
@@ -580,6 +769,9 @@ export function NoteFraisList() {
                   <Input
                     id={`NoteFraisList.line.${i}.label`}
                     placeholder={tr('NoteFraisList.libelle.action')}
+                    title={tr('NoteFraisList.libelle.action')}
+                    required
+                    aria-required="true"
                     className="sm:col-span-2"
                     value={line.label}
                     onChange={(e) =>
@@ -592,6 +784,9 @@ export function NoteFraisList() {
                   <Input
                     id={`NoteFraisList.line.${i}.adresse`}
                     placeholder={tr('NoteFraisList.adresse')}
+                    title={tr('NoteFraisList.adresse')}
+                    required
+                    aria-required="true"
                     className="sm:col-span-4"
                     value={line.adresse}
                     onChange={(e) =>
@@ -607,6 +802,9 @@ export function NoteFraisList() {
                     step="0.01"
                     min="0"
                     placeholder={tr('NoteFraisList.montant.ht')}
+                    title={tr('NoteFraisList.montant.ht')}
+                    required
+                    aria-required="true"
                     className="sm:col-span-2"
                     value={line.montantHT}
                     onChange={(e) =>
@@ -622,6 +820,9 @@ export function NoteFraisList() {
                     step="0.01"
                     min="0"
                     placeholder={tr('NoteFraisList.montant.ttc')}
+                    title={tr('NoteFraisList.montant.ttc')}
+                    required
+                    aria-required="true"
                     className="sm:col-span-2"
                     value={line.montantTTC}
                     onChange={(e) =>
@@ -635,6 +836,7 @@ export function NoteFraisList() {
                     <input
                       id={`NoteFraisList.line.${i}.reimbursed`}
                       type="checkbox"
+                      title={tr('NoteFraisList.remb')}
                       checked={line.reimbursed}
                       onChange={(e) =>
                         setForm({
@@ -651,6 +853,7 @@ export function NoteFraisList() {
                   <button
                     id={`NoteFraisList.line.${i}.supprimer`}
                     type="button"
+                    title={tr('NoteFraisList.supprimer')}
                     onClick={() =>
                       setForm({ ...form, lines: form.lines.filter((_, j) => j !== i) })
                     }
@@ -671,53 +874,10 @@ export function NoteFraisList() {
             </button>
           </div>
 
-          <div className="rounded-lg border border-dashed border-gray-300 p-3">
-            <div className="flex flex-wrap items-center gap-3">
-              <label id="NoteFraisList.joindre.une.facture.image.pdf" className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-50">
-                {tr('NoteFraisList.joindre.une.facture.image.pdf')}
-                <input
-                  id="NoteFraisList.joindre.une.facture.image.pdf.file"
-                  type="file"
-                  accept="image/*,application/pdf"
-                  className="hidden"
-                  onChange={handleFile}
-                />
-              </label>
-              {attachmentName && (
-                <span id="NoteFraisList.attachment.name" className="text-sm text-gray-600">
-                  {attachmentName}{' '}
-                  <button
-                    id="NoteFraisList.retirer"
-                    type="button"
-                    onClick={() => {
-                      if (attachmentUrl) URL.revokeObjectURL(attachmentUrl)
-                      setAttachmentUrl(null)
-                      setAttachmentName(null)
-                    }}
-                    className="text-red-600 hover:text-red-800"
-                  >
-                    {tr('NoteFraisList.retirer')}
-                  </button>
-                </span>
-              )}
-            </div>
-            {ocrPending && (
-              <p id="NoteFraisList.lecture.de.la.facture.en.cours.ocr" className="mt-2 text-sm text-brand-700">{tr('NoteFraisList.lecture.de.la.facture.en.cours.ocr')}</p>
-            )}
-            {attachmentUrl && (
-              <div className="mt-3 overflow-hidden rounded-lg border border-gray-200">
-                {attachmentName && isImageFile(attachmentName) ? (
-                  <img id="NoteFraisList.apercu.image" src={attachmentUrl} alt={tr('NoteFraisList.apercu.de.la.facture')} className="max-h-72 w-full object-contain" />
-                ) : (
-                  <iframe id="NoteFraisList.apercu.document" src={attachmentUrl} title={tr('NoteFraisList.apercu.du.document')} className="h-72 w-full" />
-                )}
-              </div>
-            )}
-          </div>
-
           <Field label={tr('NoteFraisList.infos.facture.texte.de.la.facture')} id="NoteFraisList.infos.facture.texte.de.la.facture">
             <Textarea
               id="NoteFraisList.infos.facture.texte.de.la.facture.textarea"
+              title={tr('NoteFraisList.infos.facture.texte.de.la.facture')}
               rows={4}
               placeholder={tr('NoteFraisList.collez.ou.saisissez.ici.le.contenu.de.la.facture.du.ticket')}
               value={form.infosFacture}

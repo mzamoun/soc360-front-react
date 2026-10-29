@@ -200,6 +200,44 @@ function renderList() {
 }
 
 describe('CraList', () => {
+  it('ouvre le détail du CRA dans une popup au clic sur la ligne', async () => {
+    userMock.value = managerUser
+    findByManagerMock.mockResolvedValue([cra({ consultantName: 'Alice Martin' })])
+    getByIdMock.mockResolvedValue(cra({ consultantName: 'Alice Martin' }))
+
+    renderList()
+
+    await screen.findByText('Alice Martin')
+    fireEvent.click(document.getElementById('CraList.row.1') as HTMLElement)
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+    await waitFor(() => expect(getByIdMock).toHaveBeenCalledWith(1))
+  })
+
+  it('navigue entre les mois dans la popup sans filtrer ni fermer la liste', async () => {
+    userMock.value = managerUser
+    const august = cra({ id: 1, month: 8 })
+    const september = cra({ id: 2, month: 9 })
+    findByManagerMock.mockResolvedValue([august, september])
+    findByConsultantMock.mockResolvedValue([august, september])
+    getByIdMock.mockImplementation((id: number) =>
+      Promise.resolve(id === 2 ? september : august),
+    )
+
+    renderList()
+
+    await waitFor(() => expect(document.getElementById('CraList.row.1')).not.toBeNull())
+    fireEvent.click(document.getElementById('CraList.row.1') as HTMLElement)
+    await screen.findByRole('dialog')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Mois suivant' }))
+
+    await waitFor(() => expect(getByIdMock).toHaveBeenCalledWith(2))
+    expect(screen.getByRole('dialog')).toBeInTheDocument()
+    expect((document.getElementById('CraList.mois.select') as HTMLSelectElement).value).toBe('9')
+    expect(findByManagerMock).toHaveBeenCalledTimes(1)
+  })
+
   it('affiche les CRA de l’équipe du manager', async () => {
     userMock.value = managerUser
     findByManagerMock.mockResolvedValue([
@@ -322,9 +360,13 @@ describe('CraList', () => {
   it('n’autorise pas de période antérieure à la date d’embauche (listes mois/années)', async () => {
     const y = new Date().getFullYear()
     userMock.value = { ...consultantUser, hireDate: `${y}-08-15` } as UserDto
-    findByConsultantMock.mockResolvedValue([])
+    findByConsultantMock.mockResolvedValue([cra({ consultantName: 'Alice Martin' })])
+    getByIdMock.mockResolvedValue(cra({ consultantName: 'Alice Martin' }))
 
     renderList()
+
+    fireEvent.click(await screen.findByText('Alice Martin'))
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
 
     expect(await screen.findByRole('option', { name: 'Août' })).toBeInTheDocument()
     // Mois antérieurs à l'embauche absents de la liste.

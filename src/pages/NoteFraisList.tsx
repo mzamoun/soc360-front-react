@@ -36,6 +36,7 @@ interface LineForm {
   montantTTC: string
   reimbursed: boolean
   comment: string
+  fromDocument: boolean
 }
 
 interface FormState {
@@ -58,6 +59,7 @@ function newLine(): LineForm {
     montantTTC: '',
     reimbursed: false,
     comment: '',
+    fromDocument: false,
   }
 }
 
@@ -88,6 +90,7 @@ function fillLineFromText(lines: LineForm[], text: string, filename: string): Li
     label: base.label.trim() ? base.label : parsed.label ?? '',
     enseigne: parsed.enseigne ?? base.enseigne,
     adresse: parsed.adresse ?? base.adresse,
+    fromDocument: true,
   })
   const first = lines[0] ?? newLine()
   if (isBlankLine(first)) {
@@ -178,8 +181,12 @@ export function NoteFraisList() {
 
   const isOwner = (nf: NoteFraisDto) =>
     selfCollaboratorId != null && nf.consultantId === selfCollaboratorId
+  const isCollaboratorManager = (nf: NoteFraisDto) =>
+    nf.managerId != null && nf.managerId === user?.id
+  // Une note soumise ou validée est verrouillée, sauf pour le manager direct du collaborateur
+  // (qui peut intervenir, l'action étant historisée).
   const isReadOnlyForUser = (nf: NoteFraisDto) =>
-    isOwner(nf) && (nf.status === 'SUBMITTED' || nf.status === 'VALIDATED')
+    (nf.status === 'SUBMITTED' || nf.status === 'VALIDATED') && !isCollaboratorManager(nf)
   const canWrite = (nf: NoteFraisDto) => !isReadOnlyForUser(nf)
   const canSubmit = (nf: NoteFraisDto) =>
     isOwner(nf) && (nf.status === 'DRAFT' || nf.status === 'REJECTED')
@@ -230,6 +237,7 @@ export function NoteFraisList() {
               montantTTC: String(l.montantTTC),
               reimbursed: l.reimbursed,
               comment: l.comment ?? '',
+              fromDocument: nf.documentId != null,
             }))
           : [newLine()],
       infosFacture: nf.infosFacture ?? '',
@@ -259,6 +267,40 @@ export function NoteFraisList() {
 
   async function openView(nf: NoteFraisDto) {
     await openEdit(nf, !canWrite(nf))
+  }
+
+  async function removeAttachment() {
+    if (
+      !(await dialog.confirm(
+        tr('NoteFraisList.confirmer.retirer.le.document.joint', {
+          name: attachmentName ?? '',
+        }),
+        { variant: 'warning', danger: true, okLabel: tr('NoteFraisList.retirer') },
+      ))
+    ) {
+      return
+    }
+    if (attachmentUrl) URL.revokeObjectURL(attachmentUrl)
+    setAttachmentUrl(null)
+    setAttachmentName(null)
+    setAttachmentDocumentId(null)
+    setForm((prev) => {
+      const kept = prev.lines.filter((line) => !line.fromDocument)
+      return { ...prev, lines: kept.length > 0 ? kept : [newLine()] }
+    })
+  }
+
+  async function removeLine(index: number) {
+    if (
+      !(await dialog.confirm(tr('NoteFraisList.confirmer.supprimer.la.ligne'), {
+        variant: 'warning',
+        danger: true,
+        okLabel: tr('NoteFraisList.supprimer'),
+      }))
+    ) {
+      return
+    }
+    setForm({ ...form, lines: form.lines.filter((_, j) => j !== index) })
   }
 
   async function handleFile(e: ChangeEvent<HTMLInputElement>) {
@@ -644,13 +686,8 @@ export function NoteFraisList() {
           </>
         }
       >
-        <form onSubmit={handleSubmit}>
-          <fieldset disabled={readOnlyForm} className="space-y-4">
-          {formError && (
-            <div id="NoteFraisList.form.error" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
-              {formError}
-            </div>
-          )}
+        <div id="NoteFraisList.justificatif.apercu.row" className="mb-4 flex flex-col gap-4 lg:flex-row lg:items-start">
+          <div id="NoteFraisList.justificatif.champs.column" className="space-y-[30px] lg:flex-1">
           <div id="NoteFraisList.justificatif" className="rounded-lg border-2 border-brand-200 bg-brand-50/40 p-4">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
               <p id="NoteFraisList.justificatif.obligatoire.titre" className="text-sm font-semibold text-gray-900">
@@ -666,8 +703,8 @@ export function NoteFraisList() {
               <label
                 id="NoteFraisList.joindre.une.facture.image.pdf"
                 title={tr('NoteFraisList.joindre.une.facture.image.pdf')}
-                aria-disabled={attachmentDocumentId != null || uploading}
-                className={`inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-base font-semibold text-gray-700 transition ${attachmentDocumentId != null || uploading ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-gray-50'}`}
+                aria-disabled={readOnlyForm || attachmentDocumentId != null || uploading}
+                className={`inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-base font-semibold text-gray-700 transition ${readOnlyForm || attachmentDocumentId != null || uploading ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-gray-50'}`}
               >
                 +
                 <input
@@ -675,7 +712,7 @@ export function NoteFraisList() {
                   type="file"
                   accept="image/*,application/pdf,.txt,.csv,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.rtf"
                   aria-label={tr('NoteFraisList.joindre.une.facture.image.pdf')}
-                  disabled={attachmentDocumentId != null || uploading}
+                  disabled={readOnlyForm || attachmentDocumentId != null || uploading}
                   className="hidden"
                   onChange={handleFile}
                 />
@@ -696,12 +733,8 @@ export function NoteFraisList() {
                   <button
                     id="NoteFraisList.retirer"
                     type="button"
-                    onClick={() => {
-                      if (attachmentUrl) URL.revokeObjectURL(attachmentUrl)
-                      setAttachmentUrl(null)
-                      setAttachmentName(null)
-                      setAttachmentDocumentId(null)
-                    }}
+                    disabled={readOnlyForm}
+                    onClick={() => void removeAttachment()}
                     className="text-red-600 hover:text-red-800"
                   >
                     {tr('NoteFraisList.retirer')}
@@ -716,22 +749,15 @@ export function NoteFraisList() {
                   : tr('NoteFraisList.lecture.de.la.facture.en.cours.ocr')}
               </p>
             )}
-            {attachmentUrl && attachmentName && (
-              <DocumentPreview
-                id="NoteFraisList.apercu"
-                url={attachmentUrl}
-                name={attachmentName}
-                className="mt-3"
-              />
-            )}
-          </div>
 
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+          </div>
+          <div id="NoteFraisList.justificatif.champs" className="grid grid-cols-1 gap-3 rounded-lg border border-gray-200 p-3 sm:grid-cols-2">
             {!isConsultant && (
               <Field label={tr('NoteFraisList.consultant')} id="NoteFraisList.consultant">
                 <Select
                   id="NoteFraisList.consultant.select"
                   title={tr('NoteFraisList.consultant')}
+                  disabled={readOnlyForm}
                   value={form.consultantId}
                   onChange={(e) => setForm({ ...form, consultantId: e.target.value })}
                 >
@@ -748,6 +774,7 @@ export function NoteFraisList() {
               <Select
                 id="NoteFraisList.activity.select"
                 title={tr('NoteFraisList.mission')}
+                disabled={readOnlyForm}
                 value={form.activityId}
                 onChange={(e) => setForm({ ...form, activityId: e.target.value })}
               >
@@ -765,6 +792,7 @@ export function NoteFraisList() {
               <Select
                 id="NoteFraisList.mois.select"
                 title={tr('NoteFraisList.mois')}
+                disabled={readOnlyForm}
                 value={form.month}
                 onChange={(e) => setForm({ ...form, month: Number(e.target.value) })}
               >
@@ -779,6 +807,7 @@ export function NoteFraisList() {
               <Select
                 id="NoteFraisList.annee.select"
                 title={tr('NoteFraisList.annee')}
+                disabled={readOnlyForm}
                 value={form.year}
                 onChange={(e) => setForm({ ...form, year: Number(e.target.value) })}
               >
@@ -790,7 +819,27 @@ export function NoteFraisList() {
               </Select>
             </Field>
           </div>
-
+          </div>
+          {attachmentUrl && attachmentName && (
+            <div id="NoteFraisList.document.joint.section" className="lg:flex-1">
+              <p id="NoteFraisList.document.joint" className="mb-2 text-sm font-semibold text-gray-900">
+                {tr('NoteFraisList.document.joint')}
+              </p>
+              <DocumentPreview
+                id="NoteFraisList.apercu"
+                url={attachmentUrl}
+                name={attachmentName}
+              />
+            </div>
+          )}
+        </div>
+        <form onSubmit={handleSubmit}>
+          <fieldset disabled={readOnlyForm} className="space-y-4">
+          {formError && (
+            <div id="NoteFraisList.form.error" className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800">
+              {formError}
+            </div>
+          )}
           <div>
             <div className="mb-2 flex items-center justify-between">
               <div>
@@ -805,23 +854,25 @@ export function NoteFraisList() {
             </div>
             <div className="space-y-3">
               {form.lines.map((line, i) => (
-                <div key={i} className="grid grid-cols-1 gap-2 rounded-lg border border-gray-200 p-3 sm:grid-cols-12 sm:items-center">
-                  <Input
-                    id={`NoteFraisList.line.${i}.enseigne`}
-                    placeholder={tr('NoteFraisList.nom.enseigne')}
-                    title={tr('NoteFraisList.nom.enseigne')}
-                    required
-                    aria-required="true"
-                    className="sm:col-span-2"
-                    value={line.enseigne}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        lines: form.lines.map((l, j) => (j === i ? { ...l, enseigne: e.target.value } : l)),
-                      })
-                    }
-                  />
-                  <div className="sm:col-span-2 min-w-0">
+                <div key={i} className="flex items-stretch gap-2">
+                  <div id={`NoteFraisList.line.${i}.frame`} className="grid flex-1 grid-cols-1 gap-2 rounded-lg border border-gray-200 p-3 sm:grid-cols-12 sm:items-center">
+                  <Field className="sm:col-span-2" label={tr('NoteFraisList.nom.enseigne')} id={`NoteFraisList.line.${i}.enseigne.label`}>
+                    <Input
+                      id={`NoteFraisList.line.${i}.enseigne`}
+                      placeholder={tr('NoteFraisList.nom.enseigne')}
+                      title={tr('NoteFraisList.nom.enseigne')}
+                      required
+                      aria-required="true"
+                      value={line.enseigne}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          lines: form.lines.map((l, j) => (j === i ? { ...l, enseigne: e.target.value } : l)),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field className="sm:col-span-2 min-w-0" label={tr('NoteFraisList.date')} id={`NoteFraisList.line.${i}.date.label`}>
                     <Input
                       id={`NoteFraisList.line.${i}.date`}
                       type="date"
@@ -837,98 +888,103 @@ export function NoteFraisList() {
                         })
                       }
                     />
-                  </div>
-                  <Select
-                    id={`NoteFraisList.line.${i}.category`}
-                    title={tr('NoteFraisList.categorie')}
-                    required
-                    aria-required="true"
-                    className="sm:col-span-2"
-                    value={line.category}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        lines: form.lines.map((l, j) => (j === i ? { ...l, category: e.target.value } : l)),
-                      })
-                    }
-                  >
-                    {NOTE_FRAIS_CATEGORIES.map((cat, categoryIndex) => (
-                      <option id={`NoteFraisList.line.${i}.category.option.${categoryIndex}`} key={cat} value={cat}>
-                        {cat}
-                      </option>
-                    ))}
-                  </Select>
-                  <Input
-                    id={`NoteFraisList.line.${i}.label`}
-                    placeholder={tr('NoteFraisList.libelle.action')}
-                    title={tr('NoteFraisList.libelle.action')}
-                    required
-                    aria-required="true"
-                    className="sm:col-span-2"
-                    value={line.label}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        lines: form.lines.map((l, j) => (j === i ? { ...l, label: e.target.value } : l)),
-                      })
-                    }
-                  />
-                  <Input
-                    id={`NoteFraisList.line.${i}.adresse`}
-                    placeholder={tr('NoteFraisList.adresse')}
-                    title={tr('NoteFraisList.adresse')}
-                    required
-                    aria-required="true"
-                    className="sm:col-span-4"
-                    value={line.adresse}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        lines: form.lines.map((l, j) => (j === i ? { ...l, adresse: e.target.value } : l)),
-                      })
-                    }
-                  />
-                  <Input
-                    id={`NoteFraisList.line.${i}.montantHT`}
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    placeholder={tr('NoteFraisList.montant.ht')}
-                    title={tr('NoteFraisList.montant.ht')}
-                    required
-                    aria-required="true"
-                    className="sm:col-span-2"
-                    value={line.montantHT}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        lines: form.lines.map((l, j) => (j === i ? { ...l, montantHT: e.target.value } : l)),
-                      })
-                    }
-                  />
-                  <Input
-                    id={`NoteFraisList.line.${i}.montantTTC`}
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    placeholder={tr('NoteFraisList.montant.ttc')}
-                    title={tr('NoteFraisList.montant.ttc')}
-                    required
-                    aria-required="true"
-                    className="sm:col-span-2"
-                    value={line.montantTTC}
-                    onChange={(e) =>
-                      setForm({
-                        ...form,
-                        lines: form.lines.map((l, j) => (j === i ? { ...l, montantTTC: e.target.value } : l)),
-                      })
-                    }
-                  />
-                  <label id={`NoteFraisList.line.${i}.reimbursed.label`} className="flex items-center gap-2 text-sm text-gray-600 sm:col-span-1">
+                  </Field>
+                  <Field className="sm:col-span-2" label={tr('NoteFraisList.categorie')} id={`NoteFraisList.line.${i}.category.label`}>
+                    <Select
+                      id={`NoteFraisList.line.${i}.category`}
+                      title={tr('NoteFraisList.categorie')}
+                      required
+                      aria-required="true"
+                      value={line.category}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          lines: form.lines.map((l, j) => (j === i ? { ...l, category: e.target.value } : l)),
+                        })
+                      }
+                    >
+                      {NOTE_FRAIS_CATEGORIES.map((cat, categoryIndex) => (
+                        <option id={`NoteFraisList.line.${i}.category.option.${categoryIndex}`} key={cat} value={cat}>
+                          {cat}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                  <Field className="sm:col-span-2" label={tr('NoteFraisList.libelle.action')} id={`NoteFraisList.line.${i}.label.label`}>
+                    <Input
+                      id={`NoteFraisList.line.${i}.label`}
+                      placeholder={tr('NoteFraisList.libelle.action')}
+                      title={tr('NoteFraisList.libelle.action')}
+                      required
+                      aria-required="true"
+                      value={line.label}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          lines: form.lines.map((l, j) => (j === i ? { ...l, label: e.target.value } : l)),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field className="sm:col-span-4" label={tr('NoteFraisList.adresse')} id={`NoteFraisList.line.${i}.adresse.label`}>
+                    <Input
+                      id={`NoteFraisList.line.${i}.adresse`}
+                      placeholder={tr('NoteFraisList.adresse')}
+                      title={tr('NoteFraisList.adresse')}
+                      required
+                      aria-required="true"
+                      value={line.adresse}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          lines: form.lines.map((l, j) => (j === i ? { ...l, adresse: e.target.value } : l)),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field className="sm:col-span-2" label={tr('NoteFraisList.montant.ht')} id={`NoteFraisList.line.${i}.montantHT.label`}>
+                    <Input
+                      id={`NoteFraisList.line.${i}.montantHT`}
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder={tr('NoteFraisList.montant.ht')}
+                      title={tr('NoteFraisList.montant.ht')}
+                      required
+                      aria-required="true"
+                      value={line.montantHT}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          lines: form.lines.map((l, j) => (j === i ? { ...l, montantHT: e.target.value } : l)),
+                        })
+                      }
+                    />
+                  </Field>
+                  <Field className="sm:col-span-2" label={tr('NoteFraisList.montant.ttc')} id={`NoteFraisList.line.${i}.montantTTC.label`}>
+                    <Input
+                      id={`NoteFraisList.line.${i}.montantTTC`}
+                      type="number"
+                      step="0.01"
+                      min="0"
+                      placeholder={tr('NoteFraisList.montant.ttc')}
+                      title={tr('NoteFraisList.montant.ttc')}
+                      required
+                      aria-required="true"
+                      value={line.montantTTC}
+                      onChange={(e) =>
+                        setForm({
+                          ...form,
+                          lines: form.lines.map((l, j) => (j === i ? { ...l, montantTTC: e.target.value } : l)),
+                        })
+                      }
+                    />
+                  </Field>
+                  <label id={`NoteFraisList.line.${i}.remboursee.label`} className="flex items-center gap-2 pt-5 text-sm text-gray-600 sm:col-span-2">
                     <input
-                      id={`NoteFraisList.line.${i}.reimbursed`}
+                      id={`NoteFraisList.line.${i}.remboursee`}
                       type="checkbox"
-                      title={tr('NoteFraisList.remb')}
+                      title={tr('NoteFraisList.remboursee')}
                       checked={line.reimbursed}
                       onChange={(e) =>
                         setForm({
@@ -940,19 +996,20 @@ export function NoteFraisList() {
                       }
                       className="h-4 w-4 rounded border-gray-300 text-brand-600"
                     />
-                    {tr('NoteFraisList.remb')}
+                    {tr('NoteFraisList.remboursee')}
                   </label>
-                  <button
-                    id={`NoteFraisList.line.${i}.supprimer`}
-                    type="button"
-                    title={tr('NoteFraisList.supprimer')}
-                    onClick={() =>
-                      setForm({ ...form, lines: form.lines.filter((_, j) => j !== i) })
-                    }
-                    className="text-sm text-red-600 hover:text-red-800 sm:col-span-1"
-                  >
-                    {tr('NoteFraisList.supprimer')}
-                  </button>
+                  </div>
+                  <div className="flex items-center">
+                    <IconButton
+                      id={`NoteFraisList.line.${i}.supprimer`}
+                      type="button"
+                      icon="delete"
+                      label={tr('NoteFraisList.supprimer')}
+                      variant="danger"
+                      disabled={readOnlyForm}
+                      onClick={() => void removeLine(i)}
+                    />
+                  </div>
                 </div>
               ))}
             </div>

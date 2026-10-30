@@ -124,10 +124,64 @@ export function Projects() {
   }
 
   async function handleDelete(project: ProjectDto) {
-    if (!(await dialog.confirm(tr('Projects.supprimer.le.projet', { name: project.name }), { variant: 'warning', danger: true, okLabel: tr('common.delete') }))) return
     try {
-      await projectsApi.delete(project.id)
-      setData((data ?? []).filter((p) => p.id !== project.id))
+      const dependencies = await projectsApi.dependencies(project.id)
+      if (dependencies.length === 0) {
+        const deleteMessageNode = (
+          <div
+            id="Projects.supprimer.le.projet.content"
+            className="leading-relaxed text-gray-700"
+            style={{ fontSize: '14px' }}
+          >
+            <p id="Projects.supprimer.le.projet.message">
+              {tr('Projects.supprimer.le.projet.intro.before')}
+              <strong className="font-bold uppercase">{project.name}</strong>
+              {tr('Projects.supprimer.le.projet.intro.after')}
+            </p>
+          </div>
+        )
+        if (!(await dialog.confirm(
+          tr('Projects.supprimer.le.projet', { name: project.name }),
+          { variant: 'warning', danger: true, okLabel: tr('common.delete'), messageNode: deleteMessageNode },
+        ))) return
+        await projectsApi.delete(project.id)
+        setData((data ?? []).filter((p) => p.id !== project.id))
+        return
+      }
+      // Projet utilisé : il ne peut pas être supprimé, on propose de le désactiver.
+      const objects = dependencies
+        .map((d) => `• ${d.type === 'MISSION' ? tr('Projects.mission.associee', { name: d.label }) : d.label}`)
+        .join('\n')
+      const messageNode = (
+        <div
+          id="Projects.projet.associe.content"
+          className="space-y-3 leading-relaxed text-gray-700"
+          style={{ fontSize: '14px' }}
+        >
+          <p id="Projects.projet.associe.intro">
+            {tr('Projects.projet.associe.intro.before')}
+            <strong className="font-bold uppercase">{project.name}</strong>
+            {tr('Projects.projet.associe.intro.after')}
+          </p>
+          <ol id="Projects.projet.associe.objects" className="list-decimal space-y-1 pl-5">
+            {dependencies.map((d, index) => (
+              <li id={`Projects.projet.associe.object.${index}`} key={`${d.type}-${d.label}-${index}`}>
+                {d.type === 'MISSION' ? `${tr('Projects.mission.label')} : ` : ''}
+                <strong className="font-bold">{d.label}</strong>
+              </li>
+            ))}
+          </ol>
+          <p id="Projects.projet.associe.cannot.delete">{tr('Projects.projet.associe.cannot.delete')}</p>
+          <p id="Projects.projet.associe.confirm.deactivate">{tr('Projects.projet.associe.confirm.deactivate')}</p>
+        </div>
+      )
+      const confirmed = await dialog.confirm(
+        tr('Projects.projet.associe', { name: project.name, objects }),
+        { variant: 'question', okLabel: tr('Projects.desactiver.le.projet'), messageNode },
+      )
+      if (!confirmed) return
+      const updated = await projectsApi.deactivate(project.id)
+      setData((data ?? []).map((p) => (p.id === updated.id ? updated : p)))
     } catch (err) {
       void dialog.error(err instanceof ApiError ? err.message : tr('common.unexpectedError'))
     }

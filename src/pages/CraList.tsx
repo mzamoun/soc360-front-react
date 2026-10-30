@@ -1,14 +1,15 @@
 import { tr } from '../i18n/translate'
 import { useEffect, useState } from 'react'
 import { ApiError } from '../api/client'
+import { activitiesApi } from '../api/activities'
 import { consultantsApi } from '../api/consultants'
 import { crasApi } from '../api/cras'
-import type { ConsultantSummary, CraDto } from '../api/types'
+import type { ActivityDto, ConsultantSummary, CraDto } from '../api/types'
 import { useAuth } from '../auth/AuthContext'
 import { Badge, ErrorBlock, LoadingBlock, Modal, PageHeader } from '../components/data'
 import { dialog } from '../components/dialog'
 import { CraHistoryModal } from '../components/CraHistoryModal'
-import { Card, IconButton, InlineButton, Input, RefreshButton, Select } from '../components/ui'
+import { Button, Card, Field, IconButton, InlineButton, Input, RefreshButton, Select, Spinner } from '../components/ui'
 import { MonthPicker } from '../components/MonthPicker'
 import {
   CRA_STATUS_LABELS,
@@ -18,6 +19,7 @@ import {
 } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import { useDynamicTranslate } from '../lib/useDynamicTranslate'
+import { useI18n } from '../i18n'
 import { CraDetail } from './CraDetail'
 
 
@@ -26,8 +28,48 @@ function shiftMonth(year: number, month: number, delta: number): { year: number;
   return { year: Math.floor(total / 12), month: (total % 12) + 1 }
 }
 
+interface PdfMission {
+  projectId: number
+  clientName: string
+  missionName: string
+  days: number
+}
+
+function computePdfMissions(full: CraDto, activities: ActivityDto[]): PdfMission[] {
+  const activityMap = new Map(activities.map((a) => [String(a.id), a]))
+  const map = new Map<number, PdfMission>()
+  for (const day of full.days) {
+    if (day.dayType !== 'WORKED') continue
+    for (const item of day.activities) {
+      const activity = activityMap.get(String(item.activityId))
+      const code = (activity?.type?.code ?? '').toUpperCase()
+      const project = activity?.project
+      if (!project) continue
+      if (code.startsWith('CONGE') || code === 'FORMATION' || code === 'INTER_CONTRAT') continue
+      const missionDays = Number(item.days) || 0
+      if (missionDays <= 0) continue
+      const existing = map.get(project.id)
+      if (existing) {
+        existing.days += missionDays
+      } else {
+        map.set(project.id, {
+          projectId: project.id,
+          clientName: project.clientName ?? '—',
+          missionName: project.name,
+          days: missionDays,
+        })
+      }
+    }
+  }
+  return [...map.values()].sort(
+    (a, b) =>
+      a.clientName.localeCompare(b.clientName) || a.missionName.localeCompare(b.missionName),
+  )
+}
+
 export function CraList() {
   const { user } = useAuth()
+  const { language } = useI18n()
   const dt = useDynamicTranslate()
   const now = new Date()
   const [year, setYear] = useState(now.getFullYear())
@@ -41,6 +83,15 @@ export function CraList() {
   const [detailType, setDetailType] = useState('CRA')
   const [detailPreview, setDetailPreview] = useState<{ consultantId: number; year: number; month: number; type: string } | null>(null)
   const [historyCra, setHistoryCra] = useState<CraDto | null>(null)
+  const [pdfCra, setPdfCra] = useState<CraDto | null>(null)
+  const [pdfMissions, setPdfMissions] = useState<PdfMission[]>([])
+  const [pdfType, setPdfType] = useState<'client' | 'internal'>('client')
+  const [pdfProjectId, setPdfProjectId] = useState('')
+  const [pdfCanClient, setPdfCanClient] = useState(false)
+  const [pdfCanInternal, setPdfCanInternal] = useState(false)
+  const [pdfLoading, setPdfLoading] = useState(false)
+  const [pdfError, setPdfError] = useState<string | null>(null)
+  const [pdfSubmitting, setPdfSubmitting] = useState(false)
   const [search, setSearch] = useState('')
   const [consultantFilter, setConsultantFilter] = useState<number | null>(null)
   const [monthFilter, setMonthFilter] = useState('')
@@ -106,6 +157,12 @@ export function CraList() {
     [isConsultant],
   )
 
+  // Activités de la société pour déterminer, sans ouvrir le CRA, si son export PDF est possible.
+  const allActivities = useAsync(
+    () => activitiesApi.findAll(user?.socId ? { socId: user.socId } : undefined),
+    [user?.socId],
+  )
+
   const { data, loading, error, reload } = isConsultant
     ? ownCras
     : isManager
@@ -159,6 +216,24 @@ export function CraList() {
   const pageItems = list.slice(safePage * (user?.pageSize ?? 5), safePage * (user?.pageSize ?? 5) + (user?.pageSize ?? 5))
 
   const editable = (c: CraDto) => c.status !== 'SUBMITTED' && c.status !== 'VALIDATED'
+
+  // Export PDF possible depuis la liste comme depuis le détail : CRA (pas Indispo) dans un
+  // statut exportable et comportant au moins une journée d'activité renseignée.
+  const canExportPdf = (c: CraDto) => {
+    if (
+      c.type !== 'CRA' ||
+      (c.status !== 'DRAFT' && c.status !== 'SUBMITTED' && c.status !== 'VALIDATED')
+    ) {
+      return false
+    }
+    const missions = computePdfMissions(c, allActivities.data ?? [])
+    const allWorkingDaysFilled =
+      c.days.length > 0 &&
+      c.days.every(
+        (day) => day.dayType !== 'WORKED' || day.activities.some((a) => Number(a.days) > 0),
+      )
+    return missions.length > 0 || allWorkingDaysFilled
+  }
 
   function openCraPopup(cra: CraDto) {
     setOpenCraId(cra.id)
@@ -267,6 +342,88 @@ export function CraList() {
       reload()
     } catch (err) {
       void dialog.error(err instanceof ApiError ? err.message : tr('common.unexpectedError'))
+    }
+  }
+
+  async function openPdfDialog(cra: CraDto) {
+    setPdfCra(cra)
+    setPdfError(null)
+    setPdfLoading(true)
+    setPdfMissions([])
+    setPdfCanClient(false)
+    setPdfCanInternal(false)
+    setPdfType('client')
+    setPdfProjectId('')
+    try {
+      const params: { socId?: number; consultantId?: number } = {}
+      if (user?.socId) params.socId = user.socId
+      if (cra.consultantId) params.consultantId = cra.consultantId
+      const [full, activities] = await Promise.all([
+        crasApi.getById(cra.id),
+        activitiesApi.findAll(params),
+      ])
+      const missions = computePdfMissions(full, activities)
+      const statusAllowed =
+        full.type === 'CRA' &&
+        (full.status === 'DRAFT' || full.status === 'SUBMITTED' || full.status === 'VALIDATED')
+      const allWorkingDaysFilled =
+        full.days.length > 0 &&
+        full.days.every(
+          (day) => day.dayType !== 'WORKED' || day.activities.some((a) => Number(a.days) > 0),
+        )
+      const canClient = statusAllowed && missions.length > 0
+      const canInternal = statusAllowed && allWorkingDaysFilled
+      setPdfMissions(missions)
+      setPdfCanClient(canClient)
+      setPdfCanInternal(canInternal)
+      setPdfType(canClient ? 'client' : 'internal')
+      setPdfProjectId(missions.length === 1 ? String(missions[0].projectId) : '')
+    } catch (err) {
+      setPdfError(err instanceof ApiError ? err.message : tr('common.unexpectedError'))
+    } finally {
+      setPdfLoading(false)
+    }
+  }
+
+  function closePdfDialog() {
+    if (pdfSubmitting) return
+    setPdfCra(null)
+    setPdfMissions([])
+    setPdfError(null)
+    setPdfLoading(false)
+    setPdfProjectId('')
+  }
+
+  async function handleGeneratePdf() {
+    if (!pdfCra) return
+    if (pdfType === 'client' && (!pdfCanClient || !pdfProjectId)) {
+      setPdfError(tr('CraPdf.error.noMission'))
+      return
+    }
+    if (pdfType === 'internal' && !pdfCanInternal) {
+      setPdfError(tr('CraPdf.error.incomplete'))
+      return
+    }
+    setPdfError(null)
+    setPdfSubmitting(true)
+    const target = window.open('', '_blank')
+    try {
+      const url =
+        pdfType === 'client'
+          ? await crasApi.exportClientUrl(pdfCra.id, Number(pdfProjectId), language)
+          : await crasApi.exportCompanyUrl(pdfCra.id, language)
+      if (target) {
+        target.location.href = url
+      } else {
+        window.open(url, '_blank', 'noopener,noreferrer')
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000)
+      setPdfCra(null)
+    } catch (err) {
+      target?.close()
+      setPdfError(err instanceof ApiError ? err.message : tr('common.unexpectedError'))
+    } finally {
+      setPdfSubmitting(false)
     }
   }
 
@@ -489,6 +646,18 @@ export function CraList() {
                       </td>
                       <td id={`CraList.row.${cra.id}.actions`} className="px-4 py-3">
                         <div className="flex flex-wrap items-center gap-2">
+                          {canExportPdf(cra) && (
+                            <InlineButton
+                              id={`CraList.pdf.${cra.id}`}
+                              variant="soft"
+                              className="!px-2 !py-1 !text-xs"
+                              title={tr('CraPdf.export')}
+                              aria-label={tr('CraPdf.export')}
+                              onClick={(e) => { e.stopPropagation(); void openPdfDialog(cra) }}
+                            >
+                              PDF
+                            </InlineButton>
+                          )}
                           <IconButton
                             icon={editable(cra) ? 'edit' : 'view'}
                             label={editable(cra) ? tr('CraList.editer') : tr('CraList.ouvrir')}
@@ -626,6 +795,138 @@ export function CraList() {
               onChange={reload}
             />
           ) : null}
+        </Modal>
+      )}
+
+      {pdfCra && (
+        <Modal
+          open
+          title={tr('CraPdf.dialog.title')}
+          titleId="CraPdf.dialog.title.list"
+          onClose={closePdfDialog}
+          footer={
+            <>
+              <Button
+                id="CraPdf.cancel.list"
+                type="button"
+                variant="neutral"
+                className="!w-auto"
+                onClick={closePdfDialog}
+                disabled={pdfSubmitting}
+              >
+                {tr('CraPdf.cancel')}
+              </Button>
+              <Button
+                id="CraPdf.generate.list"
+                type="button"
+                className="!w-auto"
+                onClick={() => void handleGeneratePdf()}
+                disabled={pdfSubmitting || pdfLoading}
+              >
+                {pdfSubmitting ? <Spinner className="border-white border-t-transparent" /> : null}
+                {tr('CraPdf.generate')}
+              </Button>
+            </>
+          }
+        >
+          <div className="space-y-4">
+            {pdfError && <ErrorBlock id="CraPdf.error.list" message={pdfError} />}
+            {pdfLoading ? (
+              <LoadingBlock />
+            ) : (
+              <>
+                <fieldset className="space-y-2">
+                  <legend id="CraPdf.type.list" className="text-sm font-medium text-gray-700">
+                    {tr('CraPdf.type')}
+                  </legend>
+                  <label className="flex items-start gap-2 text-sm text-gray-700">
+                    <input
+                      id="CraPdf.type.client.list"
+                      type="radio"
+                      name="cra-list-export-type"
+                      className="mt-0.5"
+                      checked={pdfType === 'client'}
+                      disabled={!pdfCanClient}
+                      onChange={() => {
+                        setPdfType('client')
+                        setPdfError(null)
+                        if (!pdfProjectId && pdfMissions.length === 1) {
+                          setPdfProjectId(String(pdfMissions[0].projectId))
+                        }
+                      }}
+                    />
+                    <span>
+                      <span id="CraPdf.type.client.label.list" className="font-medium">
+                        {tr('CraPdf.type.client')}
+                      </span>
+                      <span id="CraPdf.help.client.list" className="block text-xs text-gray-500">
+                        {tr('CraPdf.help.client')}
+                      </span>
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-2 text-sm text-gray-700">
+                    <input
+                      id="CraPdf.type.internal.list"
+                      type="radio"
+                      name="cra-list-export-type"
+                      className="mt-0.5"
+                      checked={pdfType === 'internal'}
+                      disabled={!pdfCanInternal}
+                      onChange={() => {
+                        setPdfType('internal')
+                        setPdfError(null)
+                      }}
+                    />
+                    <span>
+                      <span id="CraPdf.type.internal.label.list" className="font-medium">
+                        {tr('CraPdf.type.internal')}
+                      </span>
+                      <span id="CraPdf.help.internal.list" className="block text-xs text-gray-500">
+                        {tr('CraPdf.help.internal')}
+                      </span>
+                    </span>
+                  </label>
+                </fieldset>
+
+                {pdfType === 'client' && pdfMissions.length > 1 && (
+                  <Field label={tr('CraPdf.mission')} id="CraPdf.mission.list">
+                    <Select
+                      id="CraPdf.mission.select.list"
+                      value={pdfProjectId}
+                      onChange={(e) => {
+                        setPdfProjectId(e.target.value)
+                        setPdfError(null)
+                      }}
+                    >
+                      <option id="CraPdf.select.mission.list" value="">
+                        {tr('CraPdf.select.mission')}
+                      </option>
+                      {pdfMissions.map((mission) => (
+                        <option
+                          id={`CraPdf.mission.option.${mission.projectId}.list`}
+                          key={mission.projectId}
+                          value={mission.projectId}
+                        >
+                          {mission.clientName} – {mission.missionName}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+                )}
+                {pdfType === 'client' && pdfMissions.length === 1 && (
+                  <p id="CraPdf.mission.value.list" className="text-sm text-gray-700">
+                    <span className="font-medium">{tr('CraPdf.mission')} : </span>
+                    {pdfMissions[0].clientName} – {pdfMissions[0].missionName}
+                  </p>
+                )}
+                {!pdfCanClient && !pdfCanInternal && (
+                  <p id="CraPdf.error.unavailable.list" className="text-sm text-red-600">
+                    {tr('CraPdf.error.status')}
+                  </p>
+                )}
+              </>
+            )}
+          </div>
         </Modal>
       )}
 

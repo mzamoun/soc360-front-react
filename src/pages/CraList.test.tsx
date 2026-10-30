@@ -24,7 +24,10 @@ const {
   rejectMock,
   deleteMock,
   historyMock,
+  exportClientUrlMock,
+  exportCompanyUrlMock,
   filterListMock,
+  activitiesFindAllMock,
   userMock,
 } = vi.hoisted(() => ({
   findByConsultantMock: vi.fn().mockResolvedValue([]),
@@ -39,7 +42,10 @@ const {
   rejectMock: vi.fn(),
   deleteMock: vi.fn(),
   historyMock: vi.fn(),
+  exportClientUrlMock: vi.fn(),
+  exportCompanyUrlMock: vi.fn(),
   filterListMock: vi.fn().mockResolvedValue([]),
+  activitiesFindAllMock: vi.fn().mockResolvedValue([]),
   userMock: { value: null as unknown as UserDto },
 }))
 
@@ -56,7 +62,7 @@ vi.mock('../auth/AuthContext', () => ({
 
 vi.mock('../api/activities', () => ({
   activitiesApi: {
-    findAll: vi.fn().mockResolvedValue([]),
+    findAll: activitiesFindAllMock,
   },
 }))
 
@@ -80,6 +86,8 @@ vi.mock('../api/cras', () => ({
     delete: deleteMock,
     exchanges: vi.fn(),
     history: historyMock,
+    exportClientUrl: exportClientUrlMock,
+    exportCompanyUrl: exportCompanyUrlMock,
   },
 }))
 
@@ -195,6 +203,7 @@ function stubFixedNow() {
 afterEach(() => {
   vi.unstubAllGlobals()
   vi.clearAllMocks()
+  activitiesFindAllMock.mockResolvedValue([])
   setDynamicLanguage('fr')
   userMock.value = null as unknown as UserDto
 })
@@ -360,6 +369,97 @@ describe('CraList', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Supprimer' }))
 
     await waitFor(() => expect(deleteMock).toHaveBeenCalledWith(1))
+  })
+
+  it('affiche un bouton PDF et ouvre l’export sans ouvrir le CRA en arrière-plan', async () => {
+    userMock.value = managerUser
+    const exportable = cra({
+      status: 'SUBMITTED',
+      days: [
+        {
+          id: 1,
+          date: '2026-08-03',
+          dayType: 'WORKED',
+          workedHours: 7.5,
+          hours: 0,
+          comment: null,
+          activities: [
+            {
+              id: 1,
+              activityId: 7,
+              activityName: 'Développement',
+              activityColor: null,
+              hours: 0,
+              days: 1,
+              valid: true,
+              halfDay: null,
+              comment: null,
+            },
+          ],
+        },
+      ],
+    })
+    findByManagerMock.mockResolvedValue([exportable])
+    getByIdMock.mockResolvedValue(exportable)
+    activitiesFindAllMock.mockResolvedValue([
+      {
+        id: 7,
+        name: 'Développement',
+        description: null,
+        price: 0,
+        currency: 'EUR',
+        startDate: null,
+        endDate: null,
+        type: { id: 1, code: 'MISSION', labelFr: 'Mission' },
+        project: { id: 7, name: 'Mission A', clientName: 'SFR' },
+        consultant: null,
+        soc: null,
+        active: true,
+        indispo: false,
+        weekendAllowed: false,
+        holidayAllowed: false,
+      },
+    ])
+
+    renderList()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Export PDF' }))
+
+    await waitFor(() => expect(getByIdMock).toHaveBeenCalledWith(1))
+    expect(await screen.findByText('Export PDF du CRA')).toBeInTheDocument()
+    expect(document.getElementById('CraDetail.total.jours')).toBeNull()
+
+    exportClientUrlMock.mockResolvedValue('blob:client')
+    const target = { location: { href: '' }, close: vi.fn() }
+    vi.spyOn(window, 'open').mockReturnValue(target as unknown as Window)
+    fireEvent.click(screen.getByRole('button', { name: 'Générer le PDF' }))
+    await waitFor(() => expect(exportClientUrlMock).toHaveBeenCalledWith(1, 7, expect.any(String)))
+    expect(target.location.href).toBe('blob:client')
+  })
+
+  it('n’affiche pas le bouton PDF pour un CRA non exportable', async () => {
+    userMock.value = managerUser
+    findByManagerMock.mockResolvedValue([
+      cra({ id: 2, consultantName: 'Bob Annulé', status: 'CANCELLED' }),
+    ])
+
+    renderList()
+
+    await screen.findByText('Bob Annulé')
+    expect(document.getElementById('CraList.pdf.2')).toBeNull()
+  })
+
+  it('masque le bouton PDF quand l’export n’est pas possible', async () => {
+    userMock.value = managerUser
+    findByManagerMock.mockResolvedValue([
+      cra({ id: 3, consultantName: 'Bob Vide', status: 'DRAFT', days: [] }),
+    ])
+
+    renderList()
+
+    await screen.findByText('Bob Vide')
+    await waitFor(() => expect(document.getElementById('CraList.row.3')).not.toBeNull())
+    expect(document.getElementById('CraList.pdf.3')).toBeNull()
   })
 
   it('affiche l’état vide et crée le CRA du mois pour un consultant', async () => {

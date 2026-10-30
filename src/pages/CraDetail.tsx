@@ -427,6 +427,19 @@ export function CraDetail({
   const hasAnyActivity = days.some((d) => d.activities.length > 0)
   const dayPage = usePagination(days, user?.pageSize ?? 5)
 
+  // Export PDF : un seul bouton. Le CRA Client est possible dès qu'une mission comporte
+  // des jours travaillés ; le CRA Interne exige que tous les jours ouvrés soient renseignés.
+  const exportStatusAllowed =
+    cra?.type === 'CRA' &&
+    (cra.status === 'DRAFT' || cra.status === 'SUBMITTED' || cra.status === 'VALIDATED')
+  const hasMissionDays = exportMissions.length > 0
+  const allWorkingDaysFilled =
+    days.length > 0 &&
+    days.every((d) => d.dayType !== 'WORKED' || d.activities.some((a) => Number(a.days) > 0))
+  const canExportClient = exportStatusAllowed && hasMissionDays
+  const canExportInternal = exportStatusAllowed && allWorkingDaysFilled
+  const canExportPdf = canExportClient || canExportInternal
+
   if (!cra) {
     if (loading) return <LoadingBlock />
     if (error) return <ErrorBlock message={error} />
@@ -441,19 +454,6 @@ export function CraDetail({
   const canValidate = isAdminOrResp || isManagerOfConsultant
   const ownerId = user?.consultantId ?? user?.id ?? null
   const isOwner = ownerId != null && cra.consultantId === ownerId
-
-  // Export PDF : un seul bouton. Le CRA Client est possible dès qu'une mission comporte
-  // des jours travaillés ; le CRA Interne exige que tous les jours ouvrés soient renseignés.
-  const exportStatusAllowed =
-    cra.type === 'CRA' &&
-    (cra.status === 'DRAFT' || cra.status === 'SUBMITTED' || cra.status === 'VALIDATED')
-  const hasMissionDays = exportMissions.length > 0
-  const allWorkingDaysFilled =
-    days.length > 0 &&
-    days.every((d) => d.dayType !== 'WORKED' || d.activities.some((a) => Number(a.days) > 0))
-  const canExportClient = exportStatusAllowed && hasMissionDays
-  const canExportInternal = exportStatusAllowed && allWorkingDaysFilled
-  const canExportPdf = canExportClient || canExportInternal
 
   const editable = cra.status === 'DRAFT' || cra.status === 'REJECTED' || cra.status === 'CANCELLED'
   // Le propriétaire (quel que soit son rôle) ne peut plus modifier un CRA/Indispo validé : il peut

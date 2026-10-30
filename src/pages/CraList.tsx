@@ -39,6 +39,7 @@ export function CraList() {
   const [detailMonth, setDetailMonth] = useState(now.getMonth() + 1)
   const [detailConsultantId, setDetailConsultantId] = useState<number | null>(null)
   const [detailType, setDetailType] = useState('CRA')
+  const [detailPreview, setDetailPreview] = useState<{ consultantId: number; year: number; month: number; type: string } | null>(null)
   const [historyCra, setHistoryCra] = useState<CraDto | null>(null)
   const [search, setSearch] = useState('')
   const [consultantFilter, setConsultantFilter] = useState<number | null>(null)
@@ -62,9 +63,9 @@ export function CraList() {
   const ownCras = useAsync(
     () =>
       canOwnCra && ownerId
-        ? crasApi.findByConsultant(ownerId, year)
+        ? crasApi.findAllByConsultant(ownerId)
         : Promise.resolve([] as CraDto[]),
-    [canOwnCra, ownerId, year],
+    [canOwnCra, ownerId],
   )
 
   const managerCras = useAsync(
@@ -73,28 +74,28 @@ export function CraList() {
         return [] as CraDto[]
       }
       const [team, own] = await Promise.all([
-        crasApi.findByManager(year),
-        canOwnCra ? crasApi.findByConsultant(ownerId, year) : Promise.resolve([] as CraDto[]),
+        crasApi.findAllByManager(),
+        canOwnCra ? crasApi.findAllByConsultant(ownerId) : Promise.resolve([] as CraDto[]),
       ])
       const byId = new Map<number, CraDto>()
       for (const c of own) byId.set(c.id, c)
       for (const c of team) if (!byId.has(c.id)) byId.set(c.id, c)
       return [...byId.values()]
     },
-    [isManager, ownerId, canOwnCra, year],
+    [isManager, ownerId, canOwnCra],
   )
 
   const socCras = useAsync(
     () =>
       !isConsultant && !isManager && !isAdmin && user?.socId
-        ? crasApi.findBySocYear(user.socId, year)
+        ? crasApi.findAllBySoc(user.socId)
         : Promise.resolve([] as CraDto[]),
-    [isConsultant, isManager, isAdmin, user?.socId, year],
+    [isConsultant, isManager, isAdmin, user?.socId],
   )
 
   const allCras = useAsync(
-    () => (isAdmin ? crasApi.findAllYear(year) : Promise.resolve([] as CraDto[])),
-    [isAdmin, year],
+    () => (isAdmin ? crasApi.findAll() : Promise.resolve([] as CraDto[])),
+    [isAdmin],
   )
 
   const consultants = useAsync(
@@ -161,6 +162,7 @@ export function CraList() {
 
   function openCraPopup(cra: CraDto) {
     setOpenCraId(cra.id)
+    setDetailPreview(null)
     setDetailOpen(true)
     setDetailYear(cra.year)
     setDetailMonth(cra.month)
@@ -174,6 +176,7 @@ export function CraList() {
     if (beforeHirePeriod(newYear, newMonth)) return
     setDetailYear(newYear)
     setDetailMonth(newMonth)
+    setDetailPreview(null)
     if (detailConsultantId == null) return
     try {
       const cras = await crasApi.findByConsultant(detailConsultantId, newYear)
@@ -241,6 +244,7 @@ export function CraList() {
       await crasApi.delete(c.id)
       if (openCraId === c.id) {
         setOpenCraId(null)
+        setDetailPreview(null)
         setDetailOpen(false)
       }
       reload()
@@ -249,42 +253,58 @@ export function CraList() {
     }
   }
 
-  async function findFreePeriod(): Promise<{ year: number; month: number }> {
-    if (!ownerId) return { year, month }
-    let y = year
-    let m = month
-    for (let i = 0; i < 24; i++) {
-      const cras = await crasApi.findByConsultant(ownerId, y)
-      const cra = cras.find((c) => c.year === y && c.month === m && c.type === 'CRA')
-      if (!cra || cra.status === 'DRAFT' || cra.status === 'REJECTED') {
-        return { year: y, month: m }
-      }
+  /**
+   * Premier mois sans CRA pour ce collaborateur, à partir du mois courant.
+   * Le calcul repart de la liste des CRA déjà chargée (mise à jour à chaque reload),
+   * ce qui évite un appel réseau par mois lors du clic sur « Nouveau Cra ».
+   */
+  function nextFreeCraPeriod(targetOwnerId: number, type: string): { year: number; month: number } {
+    const occupied = new Set(
+      (data ?? [])
+        .filter((c) => c.consultantId === targetOwnerId && c.type === type)
+        .map((c) => `${c.year}-${c.month}`),
+    )
+    let y = now.getFullYear()
+    let m = now.getMonth() + 1
+    for (let i = 0; i < 240; i++) {
+      if (!occupied.has(`${y}-${m}`)) return { year: y, month: m }
       m++
       if (m > 12) {
         m = 1
         y++
       }
     }
-    return { year, month }
+    return { year: y, month: m }
   }
 
-  async function createCra(type: string) {
+  function openCraPreview(consultantId: number, newYear: number, newMonth: number, type: string) {
+    setOpenCraId(null)
+    setDetailYear(newYear)
+    setDetailMonth(newMonth)
+    setDetailConsultantId(consultantId)
+    setDetailType(type)
+    setDetailPreview({ consultantId, year: newYear, month: newMonth, type })
+    setDetailOpen(true)
+  }
+
+  function createCra(type: string) {
     if (!ownerId) return
     if (isConsultant && !user.hireDate) {
       void dialog.error(tr('hireDate.required'))
       return
     }
-    try {
-      const period = await findFreePeriod()
-      const cra = await crasApi.getOrCreate(ownerId, period.year, period.month, type)
-      openCraPopup(cra)
-      if (period.year !== year || period.month !== month) {
-        setYear(period.year)
-        setMonth(period.month)
-      }
-    } catch (err) {
-      void dialog.error(err instanceof ApiError ? err.message : tr('common.unexpectedError'))
+    const period = nextFreeCraPeriod(ownerId, type)
+    openCraPreview(ownerId, period.year, period.month, type)
+  }
+
+  function createDetailCra() {
+    const targetId = detailConsultantId ?? ownerId
+    if (!targetId) return
+    if (isConsultant && !user.hireDate) {
+      void dialog.error(tr('hireDate.required'))
+      return
     }
+    openCraPreview(targetId, detailYear, detailMonth, 'CRA')
   }
 
   return (
@@ -530,6 +550,7 @@ export function CraList() {
           onClose={() => {
             setDetailOpen(false)
             setOpenCraId(null)
+            setDetailPreview(null)
             reload()
           }}
           title={tr('CraList.cra')}
@@ -576,7 +597,18 @@ export function CraList() {
             </div>
           </Card>
           </div>
-          {openCraId != null ? (
+          {detailPreview ? (
+            <CraDetail
+              id={detailPreview.consultantId}
+              preview={detailPreview}
+              onClose={() => {
+                setDetailOpen(false)
+                setDetailPreview(null)
+                reload()
+              }}
+              onChange={reload}
+            />
+          ) : openCraId != null ? (
             <CraDetail
               id={openCraId}
               onClose={() => {
@@ -587,10 +619,17 @@ export function CraList() {
               onChange={reload}
             />
           ) : (
-            <Card>
+            <Card className="flex flex-wrap items-center justify-between gap-3">
               <p id="CraList.aucun.cra.pour.ce.mois" className="text-sm font-medium text-gray-900">
                 {tr('CraList.aucun.cra.pour.ce.mois')}
               </p>
+              <IconButton
+                icon="add"
+                label={tr('CraList.creer.le.cra.de.ce.mois')}
+                variant="new"
+                onClick={() => void createDetailCra()}
+                id="CraList.detail.creer"
+              />
             </Card>
           )}
         </Modal>

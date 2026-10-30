@@ -167,8 +167,15 @@ body {
 }
 
 :root {
-  --table-header: #f9fafb;
-  --table-border: #e5e7eb;
+  --table-header: #1d48eb;
+  --table-header-text: #ffffff;
+  --table-border: #000000;
+  --table-header-font-size: 15px;
+  --form-header-bg: #0ea5e9;
+  --form-header-text: #ffffff;
+  --form-header-font-size: 15px;
+  --form-label-text: #0ea5e9;
+  --form-label-font-size: 12px;
   --btn-small-width: 50px;
   --btn-large-width: 100px;
   --btn-save-color: #1d48eb;
@@ -192,6 +199,18 @@ body {
   );
   --app-card-bg: color-mix(in srgb, var(--app-bg-color) 30%, white);
   --app-card-border: color-mix(in srgb, var(--app-bg-color) 60%, white);
+}
+
+label {
+  color: var(--form-label-text, #0ea5e9) !important;
+  font-size: var(--form-label-font-size, 12px) !important;
+  font-weight: 700;
+}
+
+thead th {
+  font-size: var(--table-header-font-size, 15px) !important;
+  font-weight: 700;
+  color: var(--table-header-text, #ffffff) !important;
 }
 
 .font_last_commit {

@@ -2,9 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Settings } from './Settings'
 
-const { getByIdMock, updateCraColorsMock, refreshMeMock, userMock } = vi.hoisted(() => ({
+const { getByIdMock, updateCraColorsMock, updateTableColorsMock, updateTableHeaderFontSizeMock, updateFormSettingsMock, refreshMeMock, userMock } = vi.hoisted(() => ({
   getByIdMock: vi.fn(),
   updateCraColorsMock: vi.fn(),
+  updateTableColorsMock: vi.fn(),
+  updateTableHeaderFontSizeMock: vi.fn(),
+  updateFormSettingsMock: vi.fn(),
   refreshMeMock: vi.fn(),
   userMock: { value: null as unknown },
 }))
@@ -71,7 +74,11 @@ vi.mock('../api/i18n', () => ({
 }))
 
 vi.mock('../api/auth', () => ({
-  authApi: {},
+  authApi: {
+    updateTableColors: updateTableColorsMock,
+    updateTableHeaderFontSize: updateTableHeaderFontSizeMock,
+    updateFormSettings: updateFormSettingsMock,
+  },
 }))
 
 vi.mock('../components/dialog', () => ({
@@ -145,5 +152,77 @@ describe('Settings — couleurs CRA', () => {
 
     expect(screen.queryByText('settings.craColors.title')).not.toBeInTheDocument()
     expect(getByIdMock).not.toHaveBeenCalled()
+  })
+
+  it('enregistre la taille de police des en-têtes de tableau', async () => {
+    userMock.value = { ...user('RESPONSIBLE_SOC'), tableHeaderFontSize: 15 }
+    getByIdMock.mockResolvedValue({
+      soc: { id: 5, name: 'Soc Test', leaveDayColor: '#ffeeaa', weekendColor: '#eefcee' },
+      subscriptions: [],
+      payments: [],
+    })
+    updateTableHeaderFontSizeMock.mockResolvedValue({})
+
+    render(<Settings />)
+
+    await screen.findByText('settings.tableHeaderFontSize.title')
+    const select = document.getElementById('settings.tableHeaderFontSize.select') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: '24' } })
+    const saveButtons = screen.getAllByRole('button', { name: 'common.save' })
+    fireEvent.click(saveButtons[saveButtons.length - 1])
+
+    await waitFor(() =>
+      expect(updateTableHeaderFontSizeMock).toHaveBeenCalledWith(24),
+    )
+  })
+
+  it('enregistre la couleur du texte des en-têtes de tableau', async () => {
+    userMock.value = user('RESPONSIBLE_SOC')
+    getByIdMock.mockResolvedValue({
+      soc: { id: 5, name: 'Soc Test', leaveDayColor: '#ffeeaa', weekendColor: '#eefcee' },
+      subscriptions: [],
+      payments: [],
+    })
+    updateTableColorsMock.mockResolvedValue({})
+
+    render(<Settings />)
+
+    await screen.findByText('settings.colors.headerText')
+    const input = document.getElementById('settings.colors.headerText.input') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '#000000' } })
+    const saveButtons = screen.getAllByRole('button', { name: 'common.save' })
+    fireEvent.click(saveButtons[saveButtons.length - 1])
+
+    await waitFor(() =>
+      expect(updateTableColorsMock).toHaveBeenCalledWith('#1d48eb', '#000000', '#000000'),
+    )
+  })
+
+  it('enregistre les paramètres d’apparence des formulaires', async () => {
+    userMock.value = user('RESPONSIBLE_SOC')
+    getByIdMock.mockResolvedValue({
+      soc: { id: 5, name: 'Soc Test', leaveDayColor: '#ffeeaa', weekendColor: '#eefcee' },
+      subscriptions: [],
+      payments: [],
+    })
+    updateFormSettingsMock.mockResolvedValue({})
+
+    render(<Settings />)
+
+    await screen.findByText('settings.forms.title')
+    const bg = document.getElementById('settings.forms.headerBg.input') as HTMLInputElement
+    fireEvent.change(bg, { target: { value: '#0284c7' } })
+    const saveButtons = screen.getAllByRole('button', { name: 'common.save' })
+    fireEvent.click(saveButtons[saveButtons.length - 1])
+
+    await waitFor(() =>
+      expect(updateFormSettingsMock).toHaveBeenCalledWith({
+        formHeaderBackgroundColor: '#0284c7',
+        formHeaderTextColor: '#ffffff',
+        formHeaderFontSize: 15,
+        formLabelTextColor: '#0ea5e9',
+        formLabelFontSize: 12,
+      }),
+    )
   })
 })

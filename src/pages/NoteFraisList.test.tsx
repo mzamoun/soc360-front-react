@@ -620,9 +620,74 @@ describe('NoteFraisList', () => {
     await waitFor(() =>
       expect(within(dialog).queryByDisplayValue('Déjeuner client')).not.toBeInTheDocument(),
     )
-    expect(
-      (document.getElementById('NoteFraisList.line.0.label') as HTMLInputElement).value,
-    ).toBe('')
+    expect(document.getElementById('NoteFraisList.line.0.label')).toBeNull()
+  })
+
+  it('retire aussi les lignes saisies manuellement quand on retire le document', async () => {
+    userMock.value = managerUser
+    findBySocYearMock.mockResolvedValue([
+      nf({ documentId: 77, documentName: 'facture.png' }),
+    ])
+    totalsByMonthMock.mockResolvedValue({})
+    totalsByCategoryMock.mockResolvedValue({})
+    summariesMock.mockResolvedValue([])
+    documentPreviewUrlMock.mockResolvedValue('blob:preview')
+
+    renderList()
+    fireEvent.click(await screen.findByText('Alice Martin'))
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(77))
+
+    fireEvent.click(document.getElementById('NoteFraisList.ajouter.une.ligne') as HTMLElement)
+    fireEvent.change(
+      document.getElementById('NoteFraisList.line.1.label') as HTMLInputElement,
+      { target: { value: 'Taxi manuel' } },
+    )
+    expect(within(dialog).getByDisplayValue('Taxi manuel')).toBeInTheDocument()
+
+    fireEvent.click(document.getElementById('NoteFraisList.retirer') as HTMLElement)
+    const dialogs = await screen.findAllByRole('dialog')
+    fireEvent.click(
+      within(dialogs[dialogs.length - 1]).getByRole('button', { name: 'Retirer' }),
+    )
+
+    await waitFor(() => {
+      expect(within(dialog).queryByDisplayValue('Déjeuner client')).not.toBeInTheDocument()
+      expect(within(dialog).queryByDisplayValue('Taxi manuel')).not.toBeInTheDocument()
+    })
+    expect(document.getElementById('NoteFraisList.line.0.label')).toBeNull()
+  })
+
+  it('efface le texte de la facture quand on retire le document', async () => {
+    userMock.value = managerUser
+    findBySocYearMock.mockResolvedValue([
+      nf({
+        documentId: 77,
+        documentName: 'facture.png',
+        infosFacture: 'TOTAL 125,50 EUR',
+      }),
+    ])
+    totalsByMonthMock.mockResolvedValue({})
+    totalsByCategoryMock.mockResolvedValue({})
+    summariesMock.mockResolvedValue([])
+    documentPreviewUrlMock.mockResolvedValue('blob:preview')
+
+    renderList()
+    fireEvent.click(await screen.findByText('Alice Martin'))
+    await screen.findByRole('dialog')
+    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(77))
+    const textarea = document.getElementById(
+      'NoteFraisList.infos.facture.texte.de.la.facture.textarea',
+    ) as HTMLTextAreaElement
+    expect(textarea.value).toBe('TOTAL 125,50 EUR')
+
+    fireEvent.click(document.getElementById('NoteFraisList.retirer') as HTMLElement)
+    const dialogs = await screen.findAllByRole('dialog')
+    fireEvent.click(
+      within(dialogs[dialogs.length - 1]).getByRole('button', { name: 'Retirer' }),
+    )
+
+    await waitFor(() => expect(textarea.value).toBe(''))
   })
 
   it('demande confirmation avant de supprimer une ligne de dépense', async () => {

@@ -17,6 +17,7 @@ const {
   historyMock,
   validateMock,
   rejectMock,
+  payMock,
   deleteMock,
   summariesMock,
   activitiesMock,
@@ -37,6 +38,7 @@ const {
   historyMock: vi.fn(),
   validateMock: vi.fn(),
   rejectMock: vi.fn(),
+  payMock: vi.fn(),
   deleteMock: vi.fn(),
   summariesMock: vi.fn(),
   activitiesMock: vi.fn().mockResolvedValue([]),
@@ -64,6 +66,8 @@ vi.mock('../api/noteFrais', () => ({
     findBySocYear: findBySocYearMock,
     findByConsultantYear: findByConsultantYearMock,
     getById: vi.fn(),
+    documentUrl: documentPreviewUrlMock,
+    downloadDocument: documentDownloadMock,
     create: createMock,
     update: vi.fn(),
     submit: submitMock,
@@ -71,6 +75,7 @@ vi.mock('../api/noteFrais', () => ({
     history: historyMock,
     validate: validateMock,
     reject: rejectMock,
+    pay: payMock,
     delete: deleteMock,
     totalsByMonth: totalsByMonthMock,
     totalsByCategory: totalsByCategoryMock,
@@ -149,7 +154,6 @@ const nf = (overrides: Partial<NoteFraisDto> = {}): NoteFraisDto => ({
       montantTTC: 125.5,
       enseigne: 'McDonald\'s',
       adresse: '1 rue de Paris',
-      reimbursed: false,
       comment: null,
     },
   ],
@@ -446,6 +450,21 @@ describe('NoteFraisList', () => {
     await waitFor(() => expect(validateMock).toHaveBeenCalledWith(1))
   })
 
+  it('marque une note validée comme payée', async () => {
+    userMock.value = managerUser
+    findBySocYearMock.mockResolvedValue([nf({ status: 'VALIDATED', managerId: 1 })])
+    totalsByMonthMock.mockResolvedValue({})
+    totalsByCategoryMock.mockResolvedValue({})
+    summariesMock.mockResolvedValue([])
+    payMock.mockResolvedValue(nf({ status: 'PAID', paidAt: '2026-08-20' }))
+
+    renderList()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Marquer payée' }))
+
+    await waitFor(() => expect(payMock).toHaveBeenCalledWith(1))
+  })
+
   it('rejette une note de frais avec le motif saisi', async () => {
     userMock.value = managerUser
     findBySocYearMock.mockResolvedValue([nf({ status: 'SUBMITTED' })])
@@ -485,7 +504,7 @@ describe('NoteFraisList', () => {
     await waitFor(() => expect(deleteMock).toHaveBeenCalledWith(1))
   })
 
-  it('affiche « Remboursée » et place l’icône Supprimer à droite du cadre', async () => {
+  it('affiche les champs de la ligne et place l’icône Supprimer à droite du cadre', async () => {
     userMock.value = managerUser
     findBySocYearMock.mockResolvedValue([])
     totalsByMonthMock.mockResolvedValue({})
@@ -496,7 +515,7 @@ describe('NoteFraisList', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Nouvelle note de frais' }))
 
     const dialog = await screen.findByRole('dialog')
-    expect(within(dialog).getByText('Remboursée')).toBeInTheDocument()
+    expect(within(dialog).queryByText('Remboursée')).not.toBeInTheDocument()
     expect(within(dialog).getByText('Nom enseigne')).toBeInTheDocument()
     expect(within(dialog).getByText('Date')).toBeInTheDocument()
     expect(within(dialog).getByText('Catégorie')).toBeInTheDocument()
@@ -510,6 +529,29 @@ describe('NoteFraisList', () => {
     expect(remove).not.toBeNull()
     expect(frame?.contains(remove)).toBe(false)
     expect(remove?.getAttribute('aria-label')).toBe('Supprimer')
+  })
+
+  it('refuse un justificatif qui n’est ni une image ni un PDF', async () => {
+    userMock.value = managerUser
+    findBySocYearMock.mockResolvedValue([])
+    totalsByMonthMock.mockResolvedValue({})
+    totalsByCategoryMock.mockResolvedValue({})
+    summariesMock.mockResolvedValue([])
+
+    renderList()
+    fireEvent.click(screen.getByRole('button', { name: 'Nouvelle note de frais' }))
+
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByLabelText(/Joindre une facture/), {
+      target: { files: [new File(['fake'], 'facture.txt', { type: 'text/plain' })] },
+    })
+
+    expect(
+      await within(dialog).findByText(
+        'Le justificatif doit être une image (PNG, JPG, JPEG) ou un PDF.',
+      ),
+    ).toBeInTheDocument()
+    expect(documentUploadMock).not.toHaveBeenCalled()
   })
 
   it('masque les libellés obligatoires quand tous les champs sont remplis', async () => {
@@ -570,12 +612,78 @@ describe('NoteFraisList', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Modifier' }))
 
     const dialog = await screen.findByRole('dialog')
-    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(77))
+    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(1))
     expect(within(dialog).getByAltText(/Aperçu de l.image/)).toHaveAttribute(
       'src',
       'blob:preview',
     )
     expect(within(dialog).getByRole('button', { name: 'Télécharger le justificatif' })).toBeInTheDocument()
+  })
+
+  it('relance l’aperçu du document après un échec transitoire', async () => {
+    userMock.value = managerUser
+    findBySocYearMock.mockResolvedValue([
+      nf({ documentId: 77, documentName: 'facture.png' }),
+    ])
+    totalsByMonthMock.mockResolvedValue({})
+    totalsByCategoryMock.mockResolvedValue({})
+    summariesMock.mockResolvedValue([])
+    documentPreviewUrlMock
+      .mockRejectedValueOnce(new Error('réseau'))
+      .mockResolvedValueOnce('blob:preview-retry')
+
+    renderList()
+    fireEvent.click(await screen.findByRole('button', { name: 'Modifier' }))
+
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledTimes(2))
+    expect(within(dialog).getByAltText(/Aperçu de l.image/)).toHaveAttribute(
+      'src',
+      'blob:preview-retry',
+    )
+  })
+
+  it('affiche un lien pour ouvrir l’aperçu dans un nouvel onglet', async () => {
+    userMock.value = managerUser
+    findBySocYearMock.mockResolvedValue([
+      nf({ documentId: 77, documentName: 'facture.png' }),
+    ])
+    totalsByMonthMock.mockResolvedValue({})
+    totalsByCategoryMock.mockResolvedValue({})
+    summariesMock.mockResolvedValue([])
+    documentPreviewUrlMock.mockResolvedValue('blob:preview')
+
+    renderList()
+    fireEvent.click(await screen.findByRole('button', { name: 'Modifier' }))
+
+    await screen.findByRole('dialog')
+    const link = await waitFor(() =>
+      document.getElementById('NoteFraisList.apercu.nouvel.onglet'),
+    )
+    expect(link).toHaveAttribute('href', 'blob:preview')
+    expect(link).toHaveAttribute('target', '_blank')
+  })
+
+  it('affiche un message quand l’aperçu reste indisponible', async () => {
+    userMock.value = managerUser
+    findBySocYearMock.mockResolvedValue([
+      nf({ documentId: 77, documentName: 'facture.png' }),
+    ])
+    totalsByMonthMock.mockResolvedValue({})
+    totalsByCategoryMock.mockResolvedValue({})
+    summariesMock.mockResolvedValue([])
+    documentPreviewUrlMock.mockRejectedValue(new Error('réseau'))
+
+    renderList()
+    fireEvent.click(await screen.findByRole('button', { name: 'Modifier' }))
+
+    const dialog = await screen.findByRole('dialog')
+    expect(
+      await within(dialog).findByText(/Aperçu indisponible pour le moment/, undefined, {
+        timeout: 4000,
+      }),
+    ).toBeInTheDocument()
+    expect(documentPreviewUrlMock).toHaveBeenCalledTimes(3)
   })
 
   it('affiche le document joint dès l’ouverture d’une note', async () => {
@@ -592,7 +700,7 @@ describe('NoteFraisList', () => {
     fireEvent.click(await screen.findByText('Alice Martin'))
 
     const dialog = await screen.findByRole('dialog')
-    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(77))
+    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(1))
     expect(within(dialog).getByAltText(/Aperçu de l.image/)).toHaveAttribute(
       'src',
       'blob:preview',
@@ -613,7 +721,7 @@ describe('NoteFraisList', () => {
     fireEvent.click(await screen.findByText('Alice Martin'))
 
     const dialog = await screen.findByRole('dialog')
-    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(77))
+    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(1))
     expect(within(dialog).getByText('Document joint')).toBeInTheDocument()
     expect(within(dialog).getByAltText(/Aperçu de l.image/)).toHaveAttribute(
       'src',
@@ -650,7 +758,7 @@ describe('NoteFraisList', () => {
 
     renderList()
     fireEvent.click(await screen.findByText('Alice Martin'))
-    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(77))
+    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(1))
 
     fireEvent.click(document.getElementById('NoteFraisList.retirer') as HTMLElement)
     const firstDialogs = await screen.findAllByRole('dialog')
@@ -679,7 +787,7 @@ describe('NoteFraisList', () => {
     renderList()
     fireEvent.click(await screen.findByText('Alice Martin'))
     const dialog = await screen.findByRole('dialog')
-    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(77))
+    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(1))
     expect(within(dialog).getByDisplayValue('Déjeuner client')).toBeInTheDocument()
 
     fireEvent.click(document.getElementById('NoteFraisList.retirer') as HTMLElement)
@@ -707,7 +815,7 @@ describe('NoteFraisList', () => {
     renderList()
     fireEvent.click(await screen.findByText('Alice Martin'))
     const dialog = await screen.findByRole('dialog')
-    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(77))
+    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(1))
 
     fireEvent.click(document.getElementById('NoteFraisList.ajouter.une.ligne') as HTMLElement)
     fireEvent.change(
@@ -746,7 +854,7 @@ describe('NoteFraisList', () => {
     renderList()
     fireEvent.click(await screen.findByText('Alice Martin'))
     await screen.findByRole('dialog')
-    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(77))
+    await waitFor(() => expect(documentPreviewUrlMock).toHaveBeenCalledWith(1))
     const textarea = document.getElementById(
       'NoteFraisList.infos.facture.texte.de.la.facture.textarea',
     ) as HTMLTextAreaElement
@@ -887,7 +995,6 @@ describe('NoteFraisList', () => {
             montantTTC: 55,
             enseigne: 'SNCF',
             adresse: '1 rue de Paris',
-            reimbursed: false,
             comment: null,
           },
         ],

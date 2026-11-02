@@ -1,11 +1,12 @@
 import { tr } from '../i18n/translate'
-import { useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { noteFraisApi } from '../api/noteFrais'
 import { activitiesApi } from '../api/activities'
 import { consultantsApi } from '../api/consultants'
 import { documentsApi } from '../api/documents'
 import { isImageFile, ocrImageText } from '../lib/ocr'
+import { isAllowedNoteFraisDocument } from '../lib/noteFraisDocument'
 import { parseReceipt } from '../lib/receipt'
 import { ApiError } from '../api/client'
 import { useAsync } from '../lib/useAsync'
@@ -41,8 +42,7 @@ interface LineForm {
   enseigne: string
   adresse: string
   montantHT: string
-  montantTTC: string
-  reimbursed: boolean
+  montantTTC: string
   comment: string
   fromDocument: boolean
 }
@@ -64,8 +64,7 @@ function newLine(): LineForm {
     enseigne: '',
     adresse: '',
     montantHT: '',
-    montantTTC: '',
-    reimbursed: false,
+    montantTTC: '',
     comment: '',
     fromDocument: false,
   }
@@ -220,10 +219,35 @@ export function NoteFraisList() {
   const [formError, setFormError] = useState<string | null>(null)
   const [attachmentUrl, setAttachmentUrl] = useState<string | null>(null)
   const [attachmentName, setAttachmentName] = useState<string | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewFailed, setPreviewFailed] = useState(false)
   const [ocrPending, setOcrPending] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [attachmentDocumentId, setAttachmentDocumentId] = useState<number | null>(null)
   const previewRequest = useRef(0)
+  const attachmentUrlRef = useRef<string | null>(null)
+
+  function replaceAttachmentUrl(url: string | null) {
+    if (attachmentUrlRef.current) {
+      URL.revokeObjectURL(attachmentUrlRef.current)
+      attachmentUrlRef.current = null
+    }
+    if (url) attachmentUrlRef.current = url
+    setAttachmentUrl(url)
+  }
+
+  useEffect(() => () => {
+    if (attachmentUrlRef.current) URL.revokeObjectURL(attachmentUrlRef.current)
+  }, [])
+
+  const attachmentPresent = attachmentDocumentId != null || attachmentName != null
+
+  function attachmentFilename(nf: NoteFraisDto): string {
+    if (nf.documentName) return nf.documentName
+    if (nf.documentContentType === 'application/pdf') return 'justificatif.pdf'
+    if (nf.documentContentType === 'image/png') return 'justificatif.png'
+    return 'justificatif.jpg'
+  }
 
   if (!user) return null
 
@@ -234,7 +258,8 @@ export function NoteFraisList() {
   // Une note soumise ou validée est verrouillée, sauf pour le manager direct du collaborateur
   // (qui peut intervenir, l'action étant historisée).
   const isReadOnlyForUser = (nf: NoteFraisDto) =>
-    (nf.status === 'SUBMITTED' || nf.status === 'VALIDATED') && !isCollaboratorManager(nf)
+    nf.status === 'PAID' ||
+    ((nf.status === 'SUBMITTED' || nf.status === 'VALIDATED') && !isCollaboratorManager(nf))
   const canWrite = (nf: NoteFraisDto) => !isReadOnlyForUser(nf)
   const canSubmit = (nf: NoteFraisDto) =>
     isOwner(nf) && (nf.status === 'DRAFT' || nf.status === 'REJECTED')
@@ -244,7 +269,7 @@ export function NoteFraisList() {
 
   function openCreate() {
     previewRequest.current += 1
-    if (attachmentUrl) URL.revokeObjectURL(attachmentUrl)
+    replaceAttachmentUrl(null)
     setForm({
       consultantId: String(selfCollaboratorId ?? ''),
       activityId: '',
@@ -256,9 +281,10 @@ export function NoteFraisList() {
     setEditing(null)
     setReadOnlyForm(false)
     setFormError(null)
-    setAttachmentUrl(null)
     setAttachmentName(null)
     setAttachmentDocumentId(null)
+    setPreviewLoading(false)
+    setPreviewFailed(false)
     setOcrPending(false)
     setUploading(false)
     setModalOpen(true)
@@ -267,7 +293,7 @@ export function NoteFraisList() {
   async function openEdit(nf: NoteFraisDto, readOnly = false) {
     const requestId = previewRequest.current + 1
     previewRequest.current = requestId
-    if (attachmentUrl) URL.revokeObjectURL(attachmentUrl)
+    replaceAttachmentUrl(null)
     setForm({
       consultantId: String(nf.consultantId),
       activityId: nf.activityId != null ? String(nf.activityId) : '',
@@ -282,10 +308,9 @@ export function NoteFraisList() {
               enseigne: l.enseigne ?? '',
               adresse: l.adresse ?? '',
               montantHT: String(l.montantHT),
-              montantTTC: String(l.montantTTC),
-              reimbursed: l.reimbursed,
+              montantTTC: String(l.montantTTC),
               comment: l.comment ?? '',
-              fromDocument: nf.documentId != null,
+              fromDocument: nf.hasDocument === true || nf.documentId != null,
             }))
           : [newLine()],
       infosFacture: nf.infosFacture ?? '',
@@ -293,23 +318,42 @@ export function NoteFraisList() {
     setEditing(nf)
     setReadOnlyForm(readOnly)
     setFormError(null)
-    setAttachmentUrl(null)
-    setAttachmentName(nf.documentName ?? null)
-    setAttachmentDocumentId(nf.documentId ?? null)
+    const hasAttachment = nf.hasDocument === true || nf.documentId != null
+    setAttachmentName(hasAttachment ? attachmentFilename(nf) : null)
+    setAttachmentDocumentId(null)
     setOcrPending(false)
     setUploading(false)
     setModalOpen(true)
-    if (nf.documentId) {
-      try {
-        const url = await documentsApi.previewUrl(nf.documentId)
-        if (requestId !== previewRequest.current) {
-          URL.revokeObjectURL(url)
+    if (hasAttachment) {
+      setPreviewLoading(true)
+      setPreviewFailed(false)
+      // Une relance couvre les échecs transitoires (chargement, jeton, réseau).
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const url = await noteFraisApi.documentUrl(nf.id)
+          if (requestId !== previewRequest.current) {
+            URL.revokeObjectURL(url)
+            return
+          }
+          replaceAttachmentUrl(url)
+          setPreviewLoading(false)
           return
+        } catch {
+          if (attempt < 2) {
+            await new Promise((resolve) =>
+              window.setTimeout(resolve, attempt === 0 ? 250 : 600),
+            )
+            if (requestId !== previewRequest.current) return
+          }
         }
-        setAttachmentUrl(url)
-      } catch {
-        // Le bouton de téléchargement reste disponible si l'aperçu échoue.
       }
+      if (requestId === previewRequest.current) {
+        setPreviewLoading(false)
+        setPreviewFailed(true)
+      }
+    } else {
+      setPreviewLoading(false)
+      setPreviewFailed(false)
     }
   }
 
@@ -328,8 +372,11 @@ export function NoteFraisList() {
     ) {
       return
     }
-    if (attachmentUrl) URL.revokeObjectURL(attachmentUrl)
-    setAttachmentUrl(null)
+    // Annule tout aperçu encore en cours pour éviter qu'il ne réapparaisse ensuite.
+    previewRequest.current += 1
+    replaceAttachmentUrl(null)
+    setPreviewLoading(false)
+    setPreviewFailed(false)
     setAttachmentName(null)
     setAttachmentDocumentId(null)
     setForm((prev) => ({
@@ -358,6 +405,11 @@ export function NoteFraisList() {
     const file = e.target.files?.[0]
     if (!file) return
     setFormError(null)
+    if (!isAllowedNoteFraisDocument(file)) {
+      setFormError(tr('NoteFraisList.justificatif.format.invalide'))
+      e.target.value = ''
+      return
+    }
     setUploading(true)
     try {
       // 1. Le justificatif est d'abord téléversé (il est obligatoire).
@@ -367,19 +419,19 @@ export function NoteFraisList() {
         socId: user?.socId ?? undefined,
         description: 'Justificatif de note de frais',
       })
-      if (attachmentUrl) URL.revokeObjectURL(attachmentUrl)
+      // Un nouveau fichier remplace tout aperçu précédent encore en cours.
+      previewRequest.current += 1
+      replaceAttachmentUrl(URL.createObjectURL(file))
+      setPreviewLoading(false)
+      setPreviewFailed(false)
       setAttachmentDocumentId(document.id)
       setAttachmentName(document.name)
-      setAttachmentUrl(URL.createObjectURL(file))
 
-      // 2. Le texte du document est ensuite placé dans la zone de texte prévue.
-      const textFile = /\.(txt|csv|md|json|xml|log)$/i.test(file.name)
+      // 2. Le texte du document (image via OCR, PDF via extraction) pré-remplit le formulaire.
+      const imageFile = isImageFile(file.name)
       const pdfFile = /\.pdf$/i.test(file.name)
-      const extractable = textFile || isImageFile(file.name) || pdfFile
       let text = ''
-      if (textFile) {
-        text = await file.text()
-      } else if (isImageFile(file.name)) {
+      if (imageFile) {
         setOcrPending(true)
         try {
           text = await ocrImageText(file)
@@ -397,9 +449,9 @@ export function NoteFraisList() {
           infosFacture: text,
           lines: fillLineFromText(prev.lines, text, file.name),
         }))
-      } else if (extractable) {
+      } else {
         setFormError(
-          isImageFile(file.name)
+          imageFile
             ? 'OCR non disponible pour cette image : saisissez les informations manuellement.'
             : 'Aucun texte extrait de ce fichier : saisissez les informations manuellement.',
         )
@@ -415,7 +467,7 @@ export function NoteFraisList() {
     e.preventDefault()
     setSubmitting(true)
     setFormError(null)
-    if (!attachmentDocumentId) {
+    if (!attachmentPresent) {
       setFormError(tr('NoteFraisList.justificatif.obligatoire.erreur'))
       setSubmitting(false)
       return
@@ -450,7 +502,6 @@ export function NoteFraisList() {
             montantTTC: Number(l.montantTTC) || 0,
             enseigne: l.enseigne.trim() || null,
             adresse: l.adresse.trim() || null,
-            reimbursed: l.reimbursed,
             comment: l.comment || null,
           })),
         infosFacture: form.infosFacture || null,
@@ -479,7 +530,7 @@ export function NoteFraisList() {
 
   async function changeStatus(
     nf: NoteFraisDto,
-    action: 'submit' | 'cancel' | 'validate' | 'reject' | 'delete',
+    action: 'submit' | 'cancel' | 'validate' | 'reject' | 'pay' | 'delete',
   ) {
     try {
       if (action === 'submit') {
@@ -490,6 +541,9 @@ export function NoteFraisList() {
         setData((prev) => (prev ?? []).map((x) => (x.id === updated.id ? updated : x)))
       } else if (action === 'validate') {
         const updated = await noteFraisApi.validate(nf.id)
+        setData((prev) => (prev ?? []).map((x) => (x.id === updated.id ? updated : x)))
+      } else if (action === 'pay') {
+        const updated = await noteFraisApi.pay(nf.id)
         setData((prev) => (prev ?? []).map((x) => (x.id === updated.id ? updated : x)))
       } else if (action === 'reject') {
         const comment = await dialog.prompt(tr('common.rejectionReason'))
@@ -508,14 +562,14 @@ export function NoteFraisList() {
     }
   }
 
-  async function handleFormAction(action: 'submit' | 'validate' | 'reject') {
+  async function handleFormAction(action: 'submit' | 'validate' | 'reject' | 'pay') {
     if (!editing) return
     if (await changeStatus(editing, action)) setModalOpen(false)
   }
 
   const filledLines = form.lines.filter((l) => !isBlankLine(l))
   const requiredFieldsCompleted =
-    attachmentDocumentId != null &&
+    attachmentPresent &&
     filledLines.length > 0 &&
     filledLines.every(
       (l) =>
@@ -723,6 +777,9 @@ export function NoteFraisList() {
                         <IconButton icon="reject" label={tr('Unavailability.rejeter')} variant="danger" onClick={(e) => { e.stopPropagation(); void changeStatus(nf, 'reject') }} id={`Unavailability.rejeter.${nf.id}`} />
                       </>
                     )}
+                    {canReview(nf) && nf.status === 'VALIDATED' && (
+                      <IconButton icon="check" label={tr('NoteFraisList.marquer.payee')} variant="soft" onClick={(e) => { e.stopPropagation(); void changeStatus(nf, 'pay') }} id={`NoteFraisList.marquer.payee.${nf.id}`} />
+                    )}
                     <IconButton icon="delete" label={tr('NoteFraisList.suppr')} variant="danger" disabled={isReadOnlyForUser(nf)} onClick={(e) => { e.stopPropagation(); void changeStatus(nf, 'delete') }} id={`NoteFraisList.suppr.${nf.id}`} />
                     <IconButton icon="history" label={tr('NoteFraisList.historique')} variant="history" onClick={(e) => { e.stopPropagation(); setHistoryFor(nf) }} id={`NoteFraisList.historique.${nf.id}`} />
                   </div>
@@ -758,6 +815,9 @@ export function NoteFraisList() {
             {editing && canReview(editing) && editing.status === 'SUBMITTED' && (
               <IconButton icon="reject" label={tr('Unavailability.rejeter')} variant="danger" onClick={() => void handleFormAction('reject')} id="NoteFraisList.form.rejeter" />
             )}
+            {editing && canReview(editing) && editing.status === 'VALIDATED' && (
+              <IconButton icon="check" label={tr('NoteFraisList.marquer.payee')} variant="soft" onClick={() => void handleFormAction('pay')} id="NoteFraisList.form.payer" />
+            )}
             <IconButton id={editing ? 'common.save' : 'common.create'} icon={editing ? 'save' : 'add'} label={editing ? tr('common.save') : tr('common.create')} variant="primary" className="w-auto" onClick={handleSubmit as never} disabled={readOnlyForm || submitting || uploading || !formIsValid} loading={submitting || uploading} />
           </>
         }
@@ -779,16 +839,16 @@ export function NoteFraisList() {
               <label
                 id="NoteFraisList.joindre.une.facture.image.pdf"
                 title={tr('NoteFraisList.joindre.une.facture.image.pdf')}
-                aria-disabled={readOnlyForm || attachmentDocumentId != null || uploading}
-                className={`inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-base font-semibold text-gray-700 transition ${readOnlyForm || attachmentDocumentId != null || uploading ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-gray-50'}`}
+                aria-disabled={readOnlyForm || attachmentPresent || uploading}
+                className={`inline-flex items-center gap-2 rounded-lg border border-gray-300 bg-white px-3 py-2 text-base font-semibold text-gray-700 transition ${readOnlyForm || attachmentPresent || uploading ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-gray-50'}`}
               >
                 +
                 <input
                   id="NoteFraisList.joindre.une.facture.image.pdf.file"
                   type="file"
-                  accept="image/*,application/pdf,.txt,.csv,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.odt,.ods,.rtf"
+                  accept="image/png,image/jpeg,application/pdf,.png,.jpg,.jpeg,.pdf"
                   aria-label={tr('NoteFraisList.joindre.une.facture.image.pdf')}
-                  disabled={readOnlyForm || attachmentDocumentId != null || uploading}
+                  disabled={readOnlyForm || attachmentPresent || uploading}
                   className="hidden"
                   onChange={handleFile}
                 />
@@ -796,16 +856,22 @@ export function NoteFraisList() {
               {attachmentName && (
                 <span id="NoteFraisList.attachment.name" className="flex flex-wrap items-center gap-2 text-sm text-gray-600">
                   <span id="NoteFraisList.attachment.name.value">{attachmentName}</span>
-                  {attachmentDocumentId != null && (
+                  {attachmentDocumentId != null || (editing?.id && (editing.hasDocument === true || editing.documentId != null)) ? (
                     <button
                       id="NoteFraisList.justificatif.telecharger"
                       type="button"
-                      onClick={() => void documentsApi.download(attachmentDocumentId, attachmentName ?? 'justificatif')}
+                      onClick={() => {
+                        if (attachmentDocumentId != null) {
+                          void documentsApi.download(attachmentDocumentId, attachmentName ?? 'justificatif')
+                        } else if (editing?.id) {
+                          void noteFraisApi.downloadDocument(editing.id, attachmentName ?? 'justificatif')
+                        }
+                      }}
                       className="text-brand-600 hover:text-brand-700"
                     >
                       {tr('NoteFraisList.justificatif.telecharger')}
                     </button>
-                  )}
+                  ) : null}
                   <button
                     id="NoteFraisList.retirer"
                     type="button"
@@ -896,16 +962,43 @@ export function NoteFraisList() {
             </Field>
           </div>
           </div>
-          {attachmentUrl && attachmentName && (
+          {attachmentName && (
             <div id="NoteFraisList.document.joint.section" className="lg:flex-1">
               <p id="NoteFraisList.document.joint" className="mb-2 text-sm font-semibold text-gray-900">
                 {tr('NoteFraisList.document.joint')}
               </p>
-              <DocumentPreview
-                id="NoteFraisList.apercu"
-                url={attachmentUrl}
-                name={attachmentName}
-              />
+              {attachmentUrl ? (
+                <>
+                  <DocumentPreview
+                    id="NoteFraisList.apercu"
+                    url={attachmentUrl}
+                    name={attachmentName}
+                  />
+                  <a
+                    id="NoteFraisList.apercu.nouvel.onglet"
+                    href={attachmentUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="mt-2 inline-block text-sm font-medium text-brand-600 underline hover:text-brand-700"
+                  >
+                    {tr('NoteFraisList.apercu.nouvel.onglet')}
+                  </a>
+                </>
+              ) : previewFailed ? (
+                <p
+                  id="NoteFraisList.apercu.indisponible"
+                  className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
+                >
+                  {tr('NoteFraisList.apercu.indisponible')}
+                </p>
+              ) : (
+                <p
+                  id="NoteFraisList.apercu.chargement"
+                  className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-600"
+                >
+                  {previewLoading ? tr('NoteFraisList.apercu.chargement') : tr('NoteFraisList.apercu.indisponible')}
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -1056,24 +1149,6 @@ export function NoteFraisList() {
                       }
                     />
                   </Field>
-                  <label id={`NoteFraisList.line.${i}.remboursee.label`} className="flex items-center gap-2 pt-5 text-sm text-gray-600 sm:col-span-2">
-                    <input
-                      id={`NoteFraisList.line.${i}.remboursee`}
-                      type="checkbox"
-                      title={tr('NoteFraisList.remboursee')}
-                      checked={line.reimbursed}
-                      onChange={(e) =>
-                        setForm({
-                          ...form,
-                          lines: form.lines.map((l, j) =>
-                            j === i ? { ...l, reimbursed: e.target.checked } : l,
-                          ),
-                        })
-                      }
-                      className="h-4 w-4 rounded border-gray-300 text-brand-600"
-                    />
-                    {tr('NoteFraisList.remboursee')}
-                  </label>
                   </div>
                   <div className="flex items-center">
                     <IconButton

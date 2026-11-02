@@ -1092,6 +1092,9 @@ export const EXTRACTED_FR: Record<string, string> = {
   "NoteFraisList.champs.obligatoires": "Nom d'enseigne, catégorie, libellé, adresse, date et montants HT/TTC obligatoires.",
   "NoteFraisList.date": "Date",
   "NoteFraisList.document.joint": "Document joint",
+  "NoteFraisList.apercu.chargement": "Chargement de l’aperçu…",
+  "NoteFraisList.apercu.indisponible": "Aperçu indisponible pour le moment. Utilisez le bouton de téléchargement.",
+  "NoteFraisList.apercu.nouvel.onglet": "Ouvrir l’aperçu dans un nouvel onglet",
   "NoteFraisList.categorie": "Catégorie",
   "Unavailability.date.passee": "Une indisponibilité ne peut pas être saisie dans le passé.",
   "settings.buttons.disableColor": "Couleur bouton Désactiver",
@@ -1133,6 +1136,8 @@ export const EXTRACTED_FR: Record<string, string> = {
   "SocLogo.apercu": "Aperçu du logo",
   "SocLogo.televersement": "Enregistrement du logo…",
   "NoteFraisList.ouvrir.le.pdf.du.mois": "Ouvrir le PDF du mois dans un nouvel onglet",
+  "NoteFraisList.marquer.payee": "Marquer payée",
+  "NoteFraisList.justificatif.format.invalide": "Le justificatif doit être une image (PNG, JPG, JPEG) ou un PDF.",
 
 }
 
@@ -2230,6 +2235,9 @@ export const EXTRACTED_EN: Record<string, string> = {
   "NoteFraisList.champs.obligatoires": "Store name, category, label, address, date and HT/TTC amounts are required.",
   "NoteFraisList.date": "Date",
   "NoteFraisList.document.joint": "Attached document",
+  "NoteFraisList.apercu.chargement": "Loading preview…",
+  "NoteFraisList.apercu.indisponible": "Preview unavailable right now. Use the download button.",
+  "NoteFraisList.apercu.nouvel.onglet": "Open preview in a new tab",
   "NoteFraisList.categorie": "Category",
   "Unavailability.date.passee": "An unavailability cannot be entered in the past.",
   "settings.buttons.disableColor": "Disable button colour",
@@ -2271,6 +2279,8 @@ export const EXTRACTED_EN: Record<string, string> = {
   "SocLogo.apercu": "Logo preview",
   "SocLogo.televersement": "Saving logo…",
   "NoteFraisList.ouvrir.le.pdf.du.mois": "Open the month PDF in a new tab",
+  "NoteFraisList.marquer.payee": "Mark as paid",
+  "NoteFraisList.justificatif.format.invalide": "The receipt must be an image (PNG, JPG, JPEG) or a PDF.",
 
 }
 
@@ -3368,6 +3378,9 @@ export const EXTRACTED_AR: Record<string, string> = {
   "NoteFraisList.champs.obligatoires": "اسم المتجر والفئة والتسمية والعنوان والتاريخ ومبالغ HT/TTC مطلوبة.",
   "NoteFraisList.date": "التاريخ",
   "NoteFraisList.document.joint": "المستند المرفق",
+  "NoteFraisList.apercu.chargement": "جارٍ تحميل المعاينة…",
+  "NoteFraisList.apercu.indisponible": "المعاينة غير متاحة حالياً. استخدم زر التنزيل.",
+  "NoteFraisList.apercu.nouvel.onglet": "فتح المعاينة في علامة تبويب جديدة",
   "NoteFraisList.categorie": "الفئة",
   "Unavailability.date.passee": "لا يمكن إدخال عدم التوفر في الماضي.",
   "settings.buttons.disableColor": "لون زر التعطيل",
@@ -3409,4 +3422,6 @@ export const EXTRACTED_AR: Record<string, string> = {
   "SocLogo.apercu": "معاينة الشعار",
   "SocLogo.televersement": "جارٍ حفظ الشعار…",
   "NoteFraisList.ouvrir.le.pdf.du.mois": "افتح ملف PDF الشهري في علامة تبويب جديدة",
+  "NoteFraisList.marquer.payee": "وضع علامة مدفوعة",
+  "NoteFraisList.justificatif.format.invalide": "يجب أن يكون الإيصال صورة (PNG أو JPG أو JPEG) أو ملف PDF.",
 }

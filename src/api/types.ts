@@ -226,6 +226,9 @@ export interface ConsultantDto {
   matricule: string | null
   modePaiement: string | null
   employee: boolean
+  hasPhoto: boolean
+  photoContentType?: string | null
+  photoSize?: number | null
 }
 
 export interface ConsultantRequest {
@@ -543,8 +546,7 @@ export interface NoteFraisLineDto {
   montantHT: number
   montantTTC: number
   enseigne: string | null
-  adresse: string | null
-  reimbursed: boolean
+  adresse: string | null
   comment: string | null
 }
 
@@ -567,6 +569,9 @@ export interface NoteFraisDto {
   infosFacture?: string | null
   documentId?: number | null
   documentName?: string | null
+  hasDocument?: boolean
+  documentContentType?: string | null
+  documentSize?: number | null
   lines: NoteFraisLineDto[]
 }
 
@@ -577,8 +582,7 @@ export interface NoteFraisLineRequest {
   montantHT: number
   montantTTC: number
   enseigne?: string | null
-  adresse?: string | null
-  reimbursed: boolean
+  adresse?: string | null
   comment?: string | null
 }
 

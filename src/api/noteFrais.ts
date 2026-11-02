@@ -7,6 +7,10 @@ export const noteFraisApi = {
   findByConsultantYear: (consultantId: number, year: number) =>
     api.get<NoteFraisDto[]>(`/note-frais/consultant/${consultantId}/${year}`),
   getById: (id: number) => api.get<NoteFraisDto>(`/note-frais/${id}`),
+  documentUrl: (id: number) =>
+    api.blobUrl(`/note-frais/${id}/document?inline=true`),
+  downloadDocument: (id: number, name: string) =>
+    api.download(`/note-frais/${id}/document`, name),
   create: (request: CreateNoteFraisRequest) =>
     api.post<NoteFraisDto>('/note-frais', request),
   update: (id: number, request: CreateNoteFraisRequest) =>
@@ -15,6 +19,7 @@ export const noteFraisApi = {
   cancel: (id: number) => api.post<NoteFraisDto>(`/note-frais/${id}/cancel`),
   history: (id: number) => api.get<NoteFraisHistoryDto[]>(`/note-frais/${id}/history`),
   validate: (id: number) => api.post<NoteFraisDto>(`/note-frais/${id}/validate`),
+  pay: (id: number) => api.post<NoteFraisDto>(`/note-frais/${id}/pay`),
   reject: (id: number, comment: string) =>
     api.post<NoteFraisDto>(`/note-frais/${id}/reject`, { comment }),
   delete: (id: number) => api.delete<void>(`/note-frais/${id}`),

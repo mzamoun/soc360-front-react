@@ -9,6 +9,7 @@ import { NotificationBell } from './NotificationBell'
 import { GlobalLoading } from '../components/GlobalLoading'
 import { useI18n } from '../i18n'
 import { LanguageSelector } from '../i18n/LanguageSelector'
+import { SocBrandLogo } from './SocBrandLogo'
 
 interface NavItem {
   to: string
@@ -132,7 +133,7 @@ export function MainLayout() {
   if (!user) return null
 
   const isAdmin = user.role === 'ADMIN'
-  const _LAST_COMMIT_ = '2026_11_02_10_29_32'
+  const _LAST_COMMIT_ = '2026_11_02_14_05_24'
 
   const sections: NavSection[] = [
     {
@@ -210,11 +211,8 @@ export function MainLayout() {
   return (
     <div className="flex h-full">
       <aside id="app-sidebar" className="flex w-64 shrink-0 flex-col overflow-y-auto bg-gray-900 text-gray-300">
-        <div id="app-brand" className="flex h-16 shrink-0 items-center gap-2 px-5 text-lg font-bold text-white">
-          <span id="MainLayout.e" className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-600 text-sm font-extrabold">
-            {tr('MainLayout.e')}
-          </span>
-          <span id="MainLayout.soc360">{tr('MainLayout.soc360')}</span>
+        <div id="app-brand" className="flex h-32 shrink-0 items-center justify-center gap-2 px-3 text-lg font-bold text-white">
+          <SocBrandLogo />
         </div>
 
         <div id="_horloge_numerique" className="px-5 pb-3">
@@ -299,6 +297,23 @@ export function MainLayout() {
         <main id="app-main" className="flex-1 overflow-y-auto p-6" style={{ background: 'var(--app-bg)' }}>
           <Outlet />
         </main>
+        <footer
+          id="app-footer"
+          className="shrink-0 border-t border-gray-200 bg-white px-6 py-2 text-center text-base font-bold text-black"
+        >
+          <span id="app.footer.copyright">
+            © Copyright SOC360{' '}
+            <a
+              id="app.footer.website"
+              href="https://www.eisi-consulting.fr"
+              target="_blank"
+              rel="noreferrer"
+              className="text-brand-600 hover:underline"
+            >
+              www.eisi-consulting.fr
+            </a>
+          </span>
+        </footer>
       </div>
       <GlobalLoading />
     </div>

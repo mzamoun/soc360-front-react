@@ -12,10 +12,12 @@ import { useAuth } from '../auth/AuthContext'
 import { tablesApi, type ColumnDetails, type SqlExecutionResult, type TableRelation } from '../api/tables'
 import { useAsync } from '../lib/useAsync'
 import { usePagination } from '../lib/usePagination'
+import { useTableSearch } from '../lib/tableSearch'
 import { IconButton, InlineButton, Input, RefreshButton, Textarea } from '../components/ui'
 import { EmptyState, ErrorBlock, LoadingBlock, Modal, PageHeader, Pagination } from '../components/data'
 import { dialog } from '../components/dialog'
 import { RelationsGraph } from '../components/RelationsGraph'
+import { UserDependenciesModal, type UserRef } from '../components/UserDependenciesModal'
 
 type Tab = 'data' | 'sql' | 'relations'
 
@@ -29,6 +31,17 @@ function displayValue(value: unknown): string {
   if (value === null || value === undefined) return '—'
   if (typeof value === 'boolean') return value ? 'true' : 'false'
   return String(value)
+}
+
+function userRefFromRow(row: Record<string, unknown>, idColumn: string): UserRef | null {
+  const id = Number(cellValue(row, idColumn))
+  if (!Number.isFinite(id)) return null
+  return {
+    id,
+    firstName: cellValue(row, 'first_name') as string | null,
+    lastName: cellValue(row, 'last_name') as string | null,
+    username: cellValue(row, 'username') as string | null,
+  }
 }
 
 function inputTypeFor(column: ColumnDetails): string {
@@ -132,6 +145,7 @@ export function Tables() {
   const [draft, setDraft] = useState<Record<string, unknown> | null>(null)
   const [inserting, setInserting] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [userToDelete, setUserToDelete] = useState<UserRef | null>(null)
 
   const relations = useAsync<TableRelation[]>(() => tablesApi.getRelations(), [])
 
@@ -179,11 +193,13 @@ export function Tables() {
   )
 
   const pageSize = user?.pageSize ?? 5
-  const totalPages = Math.max(1, Math.ceil(rows.length / pageSize))
+  const rowSearch = useTableSearch(rows)
+  const totalPages = Math.max(1, Math.ceil(rowSearch.filtered.length / pageSize))
   const safePage = Math.min(page, totalPages - 1)
-  const pagedRows = rows.slice(safePage * pageSize, safePage * pageSize + pageSize)
+  const pagedRows = rowSearch.filtered.slice(safePage * pageSize, safePage * pageSize + pageSize)
   const sqlRows = sqlResult?.rows ?? []
-  const sqlPage = usePagination(sqlRows, pageSize)
+  const sqlSearch = useTableSearch(sqlRows)
+  const sqlPage = usePagination(sqlSearch.filtered, pageSize)
   const sqlColumns = sqlRows.length > 0 ? Object.keys(sqlRows[0]) : []
 
   const filteredTables = useMemo(() => {
@@ -289,6 +305,13 @@ export function Tables() {
 
   const deleteRow = async (row: Record<string, unknown>) => {
     if (!selected || !idKey || !idColumn) return
+    if (selected === 'user_account') {
+      const user = userRefFromRow(row, idKey)
+      if (user) {
+        setUserToDelete(user)
+        return
+      }
+    }
     const idValue = cellValue(row, idKey)
     if (!(await dialog.confirm(tr('Tables.supprimer.la.ligne', { key: idKey, value: displayValue(idValue) }), { variant: 'warning', danger: true, okLabel: tr('common.delete') }))) return
     setSaving(true)
@@ -495,6 +518,25 @@ export function Tables() {
                   )}
                   {!loading && rows.length > 0 && (
                     <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+                      <div className="border-b border-gray-200 px-3 py-2">
+                        <Input
+                          id="Tables.data.search"
+                          type="search"
+                          className="max-w-sm"
+                          placeholder={tr('common.searchPlaceholder')}
+                          aria-label={tr('common.searchPlaceholder')}
+                          value={rowSearch.search}
+                          onChange={(e) => {
+                            rowSearch.setSearch(e.target.value)
+                            setPage(0)
+                          }}
+                        />
+                      </div>
+                      {rowSearch.filtered.length === 0 ? (
+                        <p id="Tables.data.search.empty" className="px-4 py-6 text-center text-sm text-gray-400">
+                          {tr('common.noResults')}
+                        </p>
+                      ) : (
                       <div className="overflow-x-auto">
                         <table className="min-w-full divide-y divide-gray-200 text-sm">
                           <thead style={{ backgroundColor: 'var(--table-header)' }}>
@@ -563,9 +605,12 @@ export function Tables() {
                           </tbody>
                         </table>
                       </div>
+                      )}
+                      {rowSearch.filtered.length > 0 && (
                       <div className="px-4 pb-3">
-                        <Pagination page={safePage} totalPages={totalPages} total={rows.length} onChange={setPage} />
+                        <Pagination page={safePage} totalPages={totalPages} total={rowSearch.filtered.length} onChange={setPage} />
                       </div>
+                      )}
                     </div>
                   )}
                 </>
@@ -601,6 +646,22 @@ export function Tables() {
                         {tr('Tables.resultat')} ({sqlRows.length})
                       </p>
                       <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+                        <div className="border-b border-gray-200 px-3 py-2">
+                          <Input
+                            id="Tables.sql.search"
+                            type="search"
+                            className="max-w-sm"
+                            placeholder={tr('common.searchPlaceholder')}
+                            aria-label={tr('common.searchPlaceholder')}
+                            value={sqlSearch.search}
+                            onChange={(e) => sqlSearch.setSearch(e.target.value)}
+                          />
+                        </div>
+                        {sqlSearch.filtered.length === 0 ? (
+                          <p id="Tables.sql.search.empty" className="px-4 py-6 text-center text-sm text-gray-400">
+                            {tr('common.noResults')}
+                          </p>
+                        ) : (
                         <div className="overflow-x-auto">
                           <table className="min-w-full divide-y divide-gray-200 text-sm">
                             <thead style={{ backgroundColor: 'var(--table-header)' }}>
@@ -638,9 +699,12 @@ export function Tables() {
                             </tbody>
                           </table>
                         </div>
+                        )}
+                        {sqlSearch.filtered.length > 0 && (
                         <div className="px-4 pb-3">
                           <Pagination page={sqlPage.page} totalPages={sqlPage.totalPages} total={sqlPage.total} onChange={sqlPage.setPage} />
                         </div>
+                        )}
                       </div>
                     </div>
                   )}
@@ -685,6 +749,23 @@ export function Tables() {
           size="lg"
           footer={
             <>
+              {!inserting && selected === 'user_account' && idKey && (() => {
+                const user = userRefFromRow(draft, idKey)
+                if (!user) return null
+                return (
+                  <IconButton
+                    icon="delete"
+                    label={tr('common.delete')}
+                    variant="danger"
+                    onClick={() => {
+                      setUserToDelete(user)
+                      setDraft(null)
+                    }}
+                    disabled={saving}
+                    id="Tables.supprimer.utilisateur"
+                  />
+                )
+              })()}
               <IconButton
                 icon="cancel"
                 label="Annuler"
@@ -736,6 +817,14 @@ export function Tables() {
           </div>
         </Modal>
       )}
+
+      <UserDependenciesModal
+        user={userToDelete}
+        onClose={() => setUserToDelete(null)}
+        onDeleted={() => {
+          if (selected) void loadTable(selected)
+        }}
+      />
     </div>
   )
 }

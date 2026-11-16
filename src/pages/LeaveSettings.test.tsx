@@ -3,11 +3,14 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { LeaveSettings } from './LeaveSettings'
 import type { LeaveConfigDto } from '../api/types'
 
-const { configsMock, saveConfigMock, setConfigActiveMock } = vi.hoisted(() => ({
-  configsMock: vi.fn(),
-  saveConfigMock: vi.fn(),
-  setConfigActiveMock: vi.fn(),
-}))
+const { configsMock, saveConfigMock, setConfigActiveMock, deleteConfigMock, confirmMock } =
+  vi.hoisted(() => ({
+    configsMock: vi.fn(),
+    saveConfigMock: vi.fn(),
+    setConfigActiveMock: vi.fn(),
+    deleteConfigMock: vi.fn(),
+    confirmMock: vi.fn(),
+  }))
 
 vi.mock('../auth/AuthContext', () => ({
   useAuth: () => ({ user: { id: 1, role: 'RESPONSIBLE_SOC', socId: 10 } }),
@@ -22,11 +25,12 @@ vi.mock('../api/leave', () => ({
     configs: configsMock,
     saveConfig: saveConfigMock,
     setConfigActive: setConfigActiveMock,
+    deleteConfig: deleteConfigMock,
   },
 }))
 
 vi.mock('../components/dialog', () => ({
-  dialog: { success: vi.fn(), error: vi.fn() },
+  dialog: { success: vi.fn(), error: vi.fn(), confirm: confirmMock },
 }))
 
 function config(overrides: Partial<LeaveConfigDto> = {}): LeaveConfigDto {
@@ -61,6 +65,7 @@ function config(overrides: Partial<LeaveConfigDto> = {}): LeaveConfigDto {
         userName: 'Alice Martin',
       },
     ],
+    deletable: true,
     ...overrides,
   }
 }
@@ -171,6 +176,90 @@ describe('LeaveSettings — activation / désactivation', () => {
 
     await waitFor(() =>
       expect(saveConfigMock).toHaveBeenCalledWith(expect.objectContaining({ active: false })),
+    )
+  })
+
+  it('supprime une configuration supprimable après confirmation', async () => {
+    configsMock.mockResolvedValue([config()])
+    confirmMock.mockResolvedValue(true)
+    deleteConfigMock.mockResolvedValue(undefined)
+
+    render(<LeaveSettings />)
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Supprimer' }))
+
+    await waitFor(() => expect(deleteConfigMock).toHaveBeenCalledWith(1))
+    expect(confirmMock).toHaveBeenCalled()
+  })
+
+  it('ne propose pas la suppression d’une configuration référencée', async () => {
+    configsMock.mockResolvedValue([config({ deletable: false })])
+
+    render(<LeaveSettings />)
+
+    await screen.findByText('CP')
+    expect(screen.queryByRole('button', { name: 'Supprimer' })).toBeNull()
+  })
+
+  it('affiche les champs de crédit selon la fréquence choisie', async () => {
+    configsMock.mockResolvedValue([])
+    render(<LeaveSettings />)
+    await waitFor(() => expect(configsMock).toHaveBeenCalled())
+
+    const frequency = document.getElementById('LeaveSettings.config.frequency') as HTMLSelectElement
+    expect(document.getElementById('LeaveSettings.config.creditMonth')).toBeNull()
+    expect(document.getElementById('LeaveSettings.config.creditDay')).not.toBeNull()
+
+    fireEvent.change(frequency, { target: { value: 'YEARLY' } })
+    expect(document.getElementById('LeaveSettings.config.creditMonth')).not.toBeNull()
+    expect(document.getElementById('LeaveSettings.config.creditDay')).not.toBeNull()
+
+    fireEvent.change(frequency, { target: { value: 'QUARTERLY' } })
+    expect(document.getElementById('LeaveSettings.config.creditMonth')).not.toBeNull()
+    expect(document.getElementById('LeaveSettings.config.creditDay')).not.toBeNull()
+
+    fireEvent.change(frequency, { target: { value: 'ONCE' } })
+    expect(document.getElementById('LeaveSettings.config.creditMonth')).toBeNull()
+    expect(document.getElementById('LeaveSettings.config.creditDay')).toBeNull()
+  })
+
+  it('refuse les valeurs négatives', async () => {
+    configsMock.mockResolvedValue([])
+    render(<LeaveSettings />)
+    await waitFor(() => expect(configsMock).toHaveBeenCalled())
+
+    fireEvent.change(document.getElementById('LeaveSettings.config.amount') as HTMLInputElement, {
+      target: { value: '-1' },
+    })
+    fireEvent.submit(document.querySelector('form') as HTMLFormElement)
+
+    expect(saveConfigMock).not.toHaveBeenCalled()
+    await waitFor(() =>
+      expect(document.getElementById('LeaveSettings.formError')?.textContent).toContain('négatives'),
+    )
+  })
+
+  it('envoie une configuration trimestrielle avec le jour et le mois choisis', async () => {
+    configsMock.mockResolvedValue([])
+    saveConfigMock.mockResolvedValue(config({ accrualFrequency: 'QUARTERLY' }))
+    render(<LeaveSettings />)
+    await waitFor(() => expect(configsMock).toHaveBeenCalled())
+
+    fireEvent.change(document.getElementById('LeaveSettings.config.frequency') as HTMLSelectElement, {
+      target: { value: 'QUARTERLY' },
+    })
+    fireEvent.change(document.getElementById('LeaveSettings.config.creditMonth') as HTMLInputElement, {
+      target: { value: '4' },
+    })
+    fireEvent.change(document.getElementById('LeaveSettings.config.creditDay') as HTMLInputElement, {
+      target: { value: '10' },
+    })
+    fireEvent.click(document.getElementById('LeaveSettings.config.submit') as HTMLButtonElement)
+
+    await waitFor(() =>
+      expect(saveConfigMock).toHaveBeenCalledWith(
+        expect.objectContaining({ accrualFrequency: 'QUARTERLY', creditMonth: 4, creditDay: 10 }),
+      ),
     )
   })
 })

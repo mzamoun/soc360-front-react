@@ -6,6 +6,7 @@ import { socsApi } from '../api/socs'
 import { ApiError } from '../api/client'
 import { ConsultantAvatar } from '../components/ConsultantAvatar'
 import { ConsultantPhotoField } from '../components/ConsultantPhotoField'
+import { UserDependenciesModal } from '../components/UserDependenciesModal'
 import { Field, IconButton, InlineButton, Input, RefreshButton, Select, Spinner } from '../components/ui'
 import {
   Badge,
@@ -154,6 +155,8 @@ export function Consultants() {
   const [historyItems, setHistoryItems] = useState<HistoConsultantDto[]>([])
   const [historyOpen, setHistoryOpen] = useState(false)
   const [historyLoading, setHistoryLoading] = useState(false)
+
+  const [userToDelete, setUserToDelete] = useState<ConsultantDto | null>(null)
 
   const selectedSocId = form.socId ? Number(form.socId) : null
   const { data: managers } = useAsync(
@@ -343,14 +346,8 @@ export function Consultants() {
     }
   }
 
-  async function handleDelete(c: ConsultantDto) {
-    if (!(await dialog.confirm(tr('Consultants.supprimer.le.collaborateur', { name: `${c.firstName} ${c.lastName}` }), { variant: 'warning', danger: true, okLabel: tr('common.delete') }))) return
-    try {
-      await consultantsApi.delete(c.id)
-      setData({ ...data!, items: data?.items.filter((x) => x.id !== c.id) ?? [] })
-    } catch (err) {
-      void dialog.error(err instanceof ApiError ? err.message : tr('common.unexpectedError'))
-    }
+  function handleDelete(c: ConsultantDto) {
+    setUserToDelete(c)
   }
 
   async function openHistory(c: ConsultantDto) {
@@ -429,6 +426,7 @@ export function Consultants() {
         <>
           <Table
             rowKey={(c) => `${c.role}-${c.id}`}
+            searchable={false}
             onRowClick={canEdit ? (c) => openEdit(c) : undefined}
             rows={data.items}
             startIndex={data.page * size}
@@ -559,6 +557,20 @@ export function Consultants() {
         size="lg"
         footer={
           <>
+            {editing && !(user != null && editing.id === user.id) && editing.role !== 'ADMIN' && (
+              <IconButton
+                icon="delete"
+                label={tr('common.delete')}
+                variant="danger"
+                type="button"
+                onClick={() => {
+                  const target = editing
+                  setModalOpen(false)
+                  void handleDelete(target)
+                }}
+                id="Consultants.form.supprimer"
+              />
+            )}
             <IconButton icon="cancel" label={tr('common.cancel')} onClick={() => setModalOpen(false)} id="common.cancel" />
             <IconButton id={editing ? 'common.save' : 'common.create'} icon={editing ? 'save' : 'add'} label={editing ? tr('common.save') : tr('common.create')} variant="primary" className="w-auto" onClick={handleSubmit as never} disabled={submitting} loading={submitting} />
           </>
@@ -945,6 +957,17 @@ export function Consultants() {
           </ul>
         )}
       </Modal>
+      <UserDependenciesModal
+        user={userToDelete}
+        onClose={() => setUserToDelete(null)}
+        onDeleted={() => {
+          if (userToDelete) {
+            setData((prev) => (prev
+              ? { ...prev, items: prev.items.filter((x) => x.id !== userToDelete.id) }
+              : prev))
+          }
+        }}
+      />
     </div>
   )
 }

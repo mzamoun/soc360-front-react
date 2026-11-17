@@ -12,8 +12,13 @@ export function LeaveBalances() {
   const { selectedSocId } = useSoc()
   const socId = selectedSocId ?? user?.socId ?? null
   const isConsultant = user?.role === 'CONSULTANT'
+  // Un collaborateur non salarié n'a pas de solde : il est sélectionné par défaut, mais un
+  // manager/responsable non salarié peut toujours consulter les soldes de ses collaborateurs.
+  const nonEmployeeUser = user?.employee === false
   const ownId = user?.consultantId ?? user?.id ?? null
-  const [consultantId, setConsultantId] = useState<number | null>(isConsultant ? ownId : null)
+  const [consultantId, setConsultantId] = useState<number | null>(
+    isConsultant || nonEmployeeUser ? ownId : null,
+  )
   const [referenceDate, setReferenceDate] = useState(new Date().toISOString().slice(0, 10))
 
   const { data: collaborators } = useAsync(
@@ -22,10 +27,12 @@ export function LeaveBalances() {
   )
   const selectedId = consultantId ?? (isConsultant ? ownId : (collaborators ?? [])[0]?.id ?? null)
 
+  // Le statut salarié vient du consultant dont on consulte le solde (soi-même ou un collaborateur).
   const { data, loading, error, reload } = useAsync(
     () => (selectedId ? leaveApi.balance(selectedId, referenceDate) : Promise.resolve(null)),
     [selectedId, referenceDate],
   )
+  const nonEmployee = data?.employee === false
 
   return (
     <div>
@@ -65,7 +72,13 @@ export function LeaveBalances() {
       {error && <ErrorBlock id="LeaveBalances.error" message={error} />}
       {loading && <LoadingBlock />}
 
-      {data && (
+      {nonEmployee && (
+        <Card id="LeaveBalances.non.salarie" className="p-5 text-sm text-gray-600">
+          Pas de soldes de congés pour les non salariés.
+        </Card>
+      )}
+
+      {data && !nonEmployee && (
         <div className="space-y-6">
           {data.balances.map((balance) => (
             <div key={balance.leaveType}>

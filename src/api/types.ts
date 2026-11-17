@@ -121,6 +121,7 @@ export interface UserDto {
   backgroundColor: string
   manager: ManagerInfo | null
   hasPhoto?: boolean
+  employee?: boolean
 }
 
 export interface AuthResponse {
@@ -1103,6 +1104,7 @@ export interface LeaveBalanceResponse {
   consultantName: string
   referenceDate: string
   balances: LeaveBalanceDto[]
+  employee?: boolean
 }
 
 export interface AdjustmentRequest {

@@ -989,6 +989,14 @@ export interface GeneratableMonthDto {
 
 export type LeaveType = 'CP' | 'RTT'
 export type LeaveAccrualFrequency = 'MONTHLY' | 'QUARTERLY' | 'YEARLY' | 'ONCE'
+export type LeaveAcquisitionMode = 'START_OF_PERIOD' | 'END_OF_PERIOD'
+export type LeaveReferencePeriod = 'CALENDAR_YEAR' | 'CUSTOM'
+export type LeaveExpirationPolicy =
+  | 'NONE'
+  | 'AFTER_DURATION'
+  | 'FIXED_DATE'
+  | 'END_OF_REFERENCE_PERIOD'
+  | 'MONTH_OF_FOLLOWING_PERIOD'
 export type LeaveMovementType = 'ACCRUAL' | 'CONSUMPTION' | 'REGULARIZATION' | 'EXPIRATION' | 'CARRYOVER' | 'ADJUSTMENT' | 'CORRECTION'
 
 export type LeaveConfigActivationAction = 'ACTIVATION' | 'DESACTIVATION'
@@ -1006,11 +1014,14 @@ export interface LeaveConfigDto {
   socId: number | null
   leaveType: LeaveType
   effectiveDate: string
+  endDate: string | null
   active: boolean
   accrualAmount: number
   accrualFrequency: LeaveAccrualFrequency
-  creditMonth: number
-  creditDay: number
+  acquisitionMode: LeaveAcquisitionMode
+  referencePeriod: LeaveReferencePeriod
+  referenceStartMonth: number | null
+  referenceStartDay: number | null
   acquisitionStartMonth: number | null
   acquisitionStartDay: number | null
   acquisitionEndMonth: number | null
@@ -1019,10 +1030,15 @@ export interface LeaveConfigDto {
   usageStartDay: number | null
   usageEndMonth: number | null
   usageEndDay: number | null
+  expirationPolicy: LeaveExpirationPolicy
   expirationMonths: number | null
+  expirationDate: string | null
+  expirationMonth: number | null
+  carryoverAllowed: boolean
   carryoverMax: number
   carryoverExpirationMonths: number | null
   negativeLimit: number
+  negativeAllowed: boolean
   activations: LeaveConfigActivationDto[]
   deletable: boolean
 }
@@ -1031,15 +1047,23 @@ export interface LeaveConfigRequest {
   socId?: number | null
   leaveType: LeaveType
   effectiveDate: string
+  endDate?: string | null
   active?: boolean
   accrualAmount: number
   accrualFrequency?: LeaveAccrualFrequency
-  creditMonth?: number
-  creditDay?: number
+  acquisitionMode?: LeaveAcquisitionMode
+  referencePeriod?: LeaveReferencePeriod
+  referenceStartMonth?: number | null
+  referenceStartDay?: number | null
+  expirationPolicy?: LeaveExpirationPolicy
   expirationMonths?: number | null
+  expirationDate?: string | null
+  expirationMonth?: number | null
+  carryoverAllowed?: boolean
   carryoverMax?: number
   carryoverExpirationMonths?: number | null
   negativeLimit?: number
+  negativeAllowed?: boolean
 }
 
 export interface LeaveEligibilityDto {
@@ -1083,6 +1107,8 @@ export interface LeaveMovementDto {
   lotId: number | null
   expirationDate: string | null
   origin: string
+  actorId?: number | null
+  actorName?: string | null
   reason: string | null
   unavailabilityId: number | null
   operationKey: string | null

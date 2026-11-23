@@ -9,6 +9,7 @@ import type {
   LeaveEligibilityRequest,
   LeaveLotDto,
   LeaveMovementDto,
+  LeaveMovementType,
   LeaveType,
 } from './types'
 
@@ -18,6 +19,7 @@ export const leaveApi = {
   setConfigActive: (id: number, active: boolean) =>
     api.post<LeaveConfigDto>(`/leave/configs/${id}/active`, { active }),
   deleteConfig: (id: number) => api.delete<void>(`/leave/configs/${id}`),
+  deleteConfigCascade: (id: number) => api.delete<void>(`/leave/configs/${id}/cascade`),
   eligibilities: (socId: number | null | undefined, leaveType: LeaveType) =>
     api.get<LeaveEligibilityDto[]>('/leave/eligibilities', { socId, leaveType }),
   saveEligibility: (request: LeaveEligibilityRequest) =>
@@ -26,7 +28,23 @@ export const leaveApi = {
     api.get<LeaveBalanceResponse>('/leave/balance', { consultantId, date }),
   lots: (consultantId: number, leaveType: LeaveType) =>
     api.get<LeaveLotDto[]>('/leave/lots', { consultantId, leaveType }),
-  movements: (consultantId: number, leaveType?: LeaveType, from?: string, to?: string) =>
-    api.get<LeaveMovementDto[]>('/leave/movements', { consultantId, leaveType, from, to }),
+  movements: (
+    consultantId: number,
+    leaveType?: LeaveType,
+    movementType?: LeaveMovementType,
+    origin?: string,
+    actorId?: number,
+    from?: string,
+    to?: string,
+  ) =>
+    api.get<LeaveMovementDto[]>('/leave/movements', {
+      consultantId,
+      leaveType,
+      movementType,
+      origin,
+      actorId,
+      from,
+      to,
+    }),
   adjust: (request: AdjustmentRequest) => api.post<LeaveBalanceDto>('/leave/adjust', request),
 }

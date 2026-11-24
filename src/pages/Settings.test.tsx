@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { Settings } from './Settings'
 
-const { getByIdMock, updateCraColorsMock, updateVatRateMock, updateTableColorsMock, updateTableHeaderFontSizeMock, updateFormSettingsMock, refreshMeMock, uploadLogoMock, userMock } = vi.hoisted(() => ({
+const { getByIdMock, updateCraColorsMock, updateVatRateMock, updateTableColorsMock, updateTableHeaderFontSizeMock, updateFormSettingsMock, refreshMeMock, uploadLogoMock, appearanceEffectiveMock, appearanceSaveMock, appearanceResetMock, appearanceRestoreMock, userMock } = vi.hoisted(() => ({
   getByIdMock: vi.fn(),
   updateCraColorsMock: vi.fn(),
   updateVatRateMock: vi.fn(),
@@ -11,6 +11,10 @@ const { getByIdMock, updateCraColorsMock, updateVatRateMock, updateTableColorsMo
   updateFormSettingsMock: vi.fn(),
   refreshMeMock: vi.fn(),
   uploadLogoMock: vi.fn(),
+  appearanceEffectiveMock: vi.fn().mockResolvedValue({ config: {}, sources: {}, userDefined: false, socDefined: false }),
+  appearanceSaveMock: vi.fn().mockResolvedValue({ scope: 'SOC', scopeId: 5, config: {}, defined: true }),
+  appearanceResetMock: vi.fn().mockResolvedValue(undefined),
+  appearanceRestoreMock: vi.fn().mockResolvedValue({ config: {}, sources: {}, userDefined: false, socDefined: false }),
   userMock: { value: null as unknown },
 }))
 
@@ -82,6 +86,21 @@ vi.mock('../api/auth', () => ({
     updateTableColors: updateTableColorsMock,
     updateTableHeaderFontSize: updateTableHeaderFontSizeMock,
     updateFormSettings: updateFormSettingsMock,
+    updateFontSize: vi.fn(),
+    updateTheme: vi.fn(),
+    updatePageSize: vi.fn(),
+    updateButtonSettings: vi.fn(),
+    updateBackgroundColor: vi.fn(),
+  },
+}))
+
+vi.mock('../api/appearance', () => ({
+  appearanceApi: {
+    effective: appearanceEffectiveMock,
+    get: vi.fn().mockResolvedValue({ scope: 'SOC', scopeId: 5, config: {}, defined: false }),
+    save: appearanceSaveMock,
+    reset: appearanceResetMock,
+    restore: appearanceRestoreMock,
   },
 }))
 
@@ -248,6 +267,7 @@ describe('Settings — couleurs CRA', () => {
     render(<Settings />)
 
     fireEvent.click(document.getElementById('settings.tab.appearance') as HTMLElement)
+    fireEvent.click(document.getElementById('settings.appearance.tab.tables') as HTMLElement)
     await screen.findByText('settings.tableHeaderFontSize.title')
     const select = document.getElementById('settings.tableHeaderFontSize.select') as HTMLSelectElement
     fireEvent.change(select, { target: { value: '24' } })
@@ -255,7 +275,10 @@ describe('Settings — couleurs CRA', () => {
     fireEvent.click(saveButtons[saveButtons.length - 1])
 
     await waitFor(() =>
-      expect(updateTableHeaderFontSizeMock).toHaveBeenCalledWith(24),
+      expect(appearanceSaveMock).toHaveBeenCalledWith(
+        'SOC',
+        expect.objectContaining({ tableHeaderFontSize: '24' }),
+      ),
     )
   })
 
@@ -271,6 +294,7 @@ describe('Settings — couleurs CRA', () => {
     render(<Settings />)
 
     fireEvent.click(document.getElementById('settings.tab.appearance') as HTMLElement)
+    fireEvent.click(document.getElementById('settings.appearance.tab.tables') as HTMLElement)
     await screen.findByText('settings.colors.headerText')
     const input = document.getElementById('settings.colors.headerText.input') as HTMLInputElement
     fireEvent.change(input, { target: { value: '#000000' } })
@@ -278,7 +302,14 @@ describe('Settings — couleurs CRA', () => {
     fireEvent.click(saveButtons[saveButtons.length - 1])
 
     await waitFor(() =>
-      expect(updateTableColorsMock).toHaveBeenCalledWith('#1d48eb', '#000000', '#000000'),
+      expect(appearanceSaveMock).toHaveBeenCalledWith(
+        'SOC',
+        expect.objectContaining({
+          tableHeaderColor: '#1d48eb',
+          tableHeaderTextColor: '#000000',
+          tableBorderColor: '#000000',
+        }),
+      ),
     )
   })
 
@@ -294,6 +325,7 @@ describe('Settings — couleurs CRA', () => {
     render(<Settings />)
 
     fireEvent.click(document.getElementById('settings.tab.appearance') as HTMLElement)
+    fireEvent.click(document.getElementById('settings.appearance.tab.forms') as HTMLElement)
     await screen.findByText('settings.forms.title')
     const bg = document.getElementById('settings.forms.headerBg.input') as HTMLInputElement
     fireEvent.change(bg, { target: { value: '#0284c7' } })
@@ -301,13 +333,160 @@ describe('Settings — couleurs CRA', () => {
     fireEvent.click(saveButtons[saveButtons.length - 1])
 
     await waitFor(() =>
-      expect(updateFormSettingsMock).toHaveBeenCalledWith({
-        formHeaderBackgroundColor: '#0284c7',
-        formHeaderTextColor: '#ffffff',
-        formHeaderFontSize: 15,
-        formLabelTextColor: '#0ea5e9',
-        formLabelFontSize: 12,
-      }),
+      expect(appearanceSaveMock).toHaveBeenCalledWith(
+        'SOC',
+        expect.objectContaining({
+          formHeaderBackgroundColor: '#0284c7',
+          formHeaderTextColor: '#ffffff',
+          formHeaderFontSize: '15',
+          formLabelTextColor: '#0ea5e9',
+          formLabelFontSize: '12',
+        }),
+      ),
     )
+  })
+
+  it('restaure le paramétrage SOC360 au niveau société après confirmation', async () => {
+    userMock.value = user('RESPONSIBLE_SOC')
+    getByIdMock.mockResolvedValue({
+      soc: { id: 5, name: 'Soc Test', leaveDayColor: '#ffeeaa', weekendColor: '#eefcee' },
+      subscriptions: [],
+      payments: [],
+    })
+
+    render(<Settings />)
+    fireEvent.click(document.getElementById('settings.tab.appearance') as HTMLElement)
+    await waitFor(() =>
+      expect(document.getElementById('settings.appearance.restore')).not.toBeNull(),
+    )
+    fireEvent.click(document.getElementById('settings.appearance.restore') as HTMLElement)
+
+    await waitFor(() => expect(appearanceRestoreMock).toHaveBeenCalled())
+  })
+
+  it('restaure et affiche les paramètres de la société pour un manager', async () => {
+    userMock.value = user('MANAGER')
+    appearanceRestoreMock.mockResolvedValueOnce({
+      config: { fontSize: '20', theme: 'forest', backgroundColor: '#123456' },
+      sources: { fontSize: 'SOC', theme: 'SOC', backgroundColor: 'SOC' },
+      userDefined: false,
+      socDefined: true,
+    })
+
+    render(<Settings />)
+    fireEvent.click(document.getElementById('settings.tab.appearance') as HTMLElement)
+    await waitFor(() =>
+      expect(document.getElementById('settings.appearance.restore')).not.toBeNull(),
+    )
+    fireEvent.click(document.getElementById('settings.appearance.restore') as HTMLElement)
+
+    await waitFor(() => expect(appearanceRestoreMock).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(
+        (document.getElementById('settings.theme.field.select') as HTMLSelectElement).value,
+      ).toBe('forest'),
+    )
+    expect(
+      (document.getElementById('settings.fontSize.field.select') as HTMLSelectElement).value,
+    ).toBe('20')
+  })
+
+  it('ne montre pas le bouton Restaurer à un administrateur', async () => {
+    userMock.value = user('ADMIN')
+
+    render(<Settings />)
+    fireEvent.click(document.getElementById('settings.tab.appearance') as HTMLElement)
+    await waitFor(() =>
+      expect(document.getElementById('common.save.button')).not.toBeNull(),
+    )
+    expect(document.getElementById('settings.appearance.restore')).toBeNull()
+  })
+
+  it('enregistre l’apparence au niveau SOC360 (GLOBAL) pour un admin', async () => {
+    userMock.value = user('ADMIN')
+    appearanceSaveMock.mockResolvedValue({
+      scope: 'GLOBAL',
+      scopeId: 0,
+      config: {},
+      defined: true,
+    })
+
+    render(<Settings />)
+    fireEvent.click(document.getElementById('settings.tab.appearance') as HTMLElement)
+    fireEvent.change(document.getElementById('settings.theme.field.select') as HTMLSelectElement, {
+      target: { value: 'forest' },
+    })
+    fireEvent.click(document.getElementById('common.save.button') as HTMLButtonElement)
+
+    await waitFor(() =>
+      expect(appearanceSaveMock).toHaveBeenCalledWith(
+        'GLOBAL',
+        expect.objectContaining({ theme: 'forest' }),
+      ),
+    )
+  })
+
+  it('enregistre l’apparence d’un manager au niveau personnel (USER)', async () => {
+    userMock.value = user('MANAGER')
+
+    render(<Settings />)
+    fireEvent.click(document.getElementById('settings.tab.appearance') as HTMLElement)
+    const theme = document.getElementById('settings.theme.field.select') as HTMLSelectElement
+    fireEvent.change(theme, { target: { value: 'forest' } })
+    fireEvent.click(document.getElementById('common.save.button') as HTMLButtonElement)
+
+    await waitFor(() =>
+      expect(appearanceSaveMock).toHaveBeenCalledWith(
+        'USER',
+        expect.objectContaining({ theme: 'forest' }),
+      ),
+    )
+  })
+
+  it('active le bouton Enregistrer dès qu’un paramètre change', async () => {
+    userMock.value = user('RESPONSIBLE_SOC')
+    getByIdMock.mockResolvedValue({
+      soc: { id: 5, name: 'Soc Test', leaveDayColor: '#ffeeaa', weekendColor: '#eefcee' },
+      subscriptions: [],
+      payments: [],
+    })
+
+    render(<Settings />)
+    fireEvent.click(document.getElementById('settings.tab.appearance') as HTMLElement)
+    const save = document.getElementById('common.save.button') as HTMLButtonElement
+    expect(save).toBeDisabled()
+
+    fireEvent.change(document.getElementById('settings.theme.field.select') as HTMLSelectElement, {
+      target: { value: 'forest' },
+    })
+
+    await waitFor(() => expect(save).not.toBeDisabled())
+  })
+
+  it('une seule sélection suffit pour le nombre de lignes par page', async () => {
+    userMock.value = user('RESPONSIBLE_SOC')
+    getByIdMock.mockResolvedValue({
+      soc: { id: 5, name: 'Soc Test', leaveDayColor: '#ffeeaa', weekendColor: '#eefcee' },
+      subscriptions: [],
+      payments: [],
+    })
+    let resolveEffective: (value: unknown) => void = () => {}
+    appearanceEffectiveMock.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveEffective = resolve
+        }),
+    )
+
+    render(<Settings />)
+    fireEvent.click(document.getElementById('settings.tab.appearance') as HTMLElement)
+    fireEvent.click(document.getElementById('settings.appearance.tab.tables') as HTMLElement)
+    const select = document.getElementById('settings.pageSize.field.select') as HTMLSelectElement
+    fireEvent.change(select, { target: { value: '10' } })
+    expect(select.value).toBe('10')
+
+    // Le chargement de l'apparence effective arrive après la saisie : il ne doit pas l'écraser.
+    resolveEffective({ config: {}, sources: {}, userDefined: false, socDefined: false })
+    await waitFor(() => expect(select.value).toBe('10'))
   })
 })

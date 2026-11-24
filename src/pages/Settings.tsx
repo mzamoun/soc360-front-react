@@ -1,5 +1,5 @@
 import { tr } from '../i18n/translate'
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useAuth } from '../auth/AuthContext'
 import { authApi } from '../api/auth'
 import { socsApi } from '../api/socs'
@@ -14,6 +14,9 @@ import { dialog } from '../components/dialog'
 import { languageLabel } from '../i18n/messages'
 import { useI18n } from '../i18n'
 import { DEFAULT_VAT_RATE } from '../lib/vat'
+import { appearanceApi } from '../api/appearance'
+import { applyAppearance } from '../lib/appearance'
+import type { AppearanceScope } from '../api/types'
 
 const FONT_SIZES = [10, 11, 12, 13, 14, 15, 16, 17, 18, 20, 22, 24]
 
@@ -135,23 +138,37 @@ export function Settings() {
   const [vatRate, setVatRate] = useState<string>(String(DEFAULT_VAT_RATE))
   const [savedVatRate, setSavedVatRate] = useState<string>(String(DEFAULT_VAT_RATE))
   const [socHasLogo, setSocHasLogo] = useState<boolean>(selectedSoc?.hasLogo ?? false)
-  const [logoChanged, setLogoChanged] = useState(false)
+  const [, setLogoChanged] = useState(false)
   const [savedLeaveDayColor, setSavedLeaveDayColor] = useState<string>(CRA_LEAVE_COLOR_DEFAULT)
   const [savedWeekendColor, setSavedWeekendColor] = useState<string>(CRA_WEEKEND_COLOR_DEFAULT)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [saved, setSaved] = useState(false)
+  // Activé dès qu'un champ des paramètres est modifié (active le bouton Enregistrer).
+  const [dirty, setDirty] = useState(false)
+  const dirtyRef = useRef(false)
+  const appliedAppearanceKeyRef = useRef<string | null>(null)
   const [languageSaving, setLanguageSaving] = useState(false)
   const [languageSaved, setLanguageSaved] = useState(false)
   const [languageError, setLanguageError] = useState<string | null>(null)
   const [activeTab, setActiveTab] = useState('general')
+  const [appearanceTab, setAppearanceTab] = useState<'application' | 'buttons' | 'forms' | 'tables'>('application')
 
   const canEditTemplates = user?.role === 'ADMIN' || user?.role === 'RESPONSIBLE_SOC'
   const canEditCraColors = user?.role === 'RESPONSIBLE_SOC'
-  const tabs = [
+  // L'admin définit l'apparence SOC360 (GLOBAL, référence des restaurations), le responsable celle
+  // de sa société, les autres une apparence personnelle.
+  const appearanceScope: AppearanceScope = user?.role === 'ADMIN'
+    ? 'GLOBAL'
+    : user?.role === 'RESPONSIBLE_SOC'
+      ? 'SOC'
+      : 'USER'
+  const appearanceRestoreLabel = user?.role === 'RESPONSIBLE_SOC'
+    ? 'Restaurer le paramétrage SOC360'
+    : 'Restaurer le paramétrage de ma société'
+  const tabs: { id: string; labelKey: string; label?: string }[] = [
     { id: 'general', labelKey: 'settings.tab.general' },
     { id: 'appearance', labelKey: 'settings.tab.appearance' },
-    { id: 'buttons', labelKey: 'settings.tab.buttons' },
     ...(canEditCraColors ? [{ id: 'company', labelKey: 'settings.tab.company' }] : []),
     ...(canEditTemplates
       ? [
@@ -288,41 +305,6 @@ export function Settings() {
   if (!user) return null
   const u = user
 
-  const changed =
-    size !== (u.fontSize ?? 14) ||
-    (u.theme || 'ocean') !== theme ||
-    (u.tableHeaderColor || '#1d48eb') !== headerColor ||
-    (u.tableHeaderTextColor || '#ffffff') !== headerTextColor ||
-    (u.tableBorderColor || '#000000') !== borderColor ||
-    (u.tableHeaderFontSize ?? 15) !== tableHeaderFontSize ||
-    (u.formHeaderBackgroundColor || '#0ea5e9') !== formHeaderBg ||
-    (u.formHeaderTextColor || '#ffffff') !== formHeaderText ||
-    (u.formHeaderFontSize ?? 15) !== formHeaderFontSize ||
-    (u.formLabelTextColor || '#0ea5e9') !== formLabelText ||
-    (u.formLabelFontSize ?? 12) !== formLabelFontSize ||
-    (u.pageSize ?? 5) !== pageSize ||
-    (u.buttonSmallWidth ?? 50) !== btnSmallWidth ||
-    (u.buttonLargeWidth ?? 100) !== btnLargeWidth ||
-    (u.buttonSaveColor || '#1d48eb') !== btnSaveColor ||
-    (u.buttonDeleteColor || '#dc2626') !== btnDeleteColor ||
-    (u.buttonCancelColor || '#ffffff') !== btnCancelColor ||
-    (u.buttonCancelTextColor || '#374151') !== btnCancelTextColor ||
-    (u.buttonSubmitColor || '#e0e7ff') !== btnSubmitColor ||
-    (u.buttonSubmitTextColor || '#1d48eb') !== btnSubmitTextColor ||
-    (u.buttonHistoryColor || '#e0e7ff') !== btnHistoryColor ||
-    (u.buttonHistoryTextColor || '#1d48eb') !== btnHistoryTextColor ||
-    (u.buttonOkColor || '#16a34a') !== btnOkColor ||
-    (u.buttonOkTextColor || '#ffffff') !== btnOkTextColor ||
-    (u.buttonNewColor || '#0ea5e9') !== btnNewColor ||
-    (u.buttonNewTextColor || '#ffffff') !== btnNewTextColor ||
-    (u.buttonDisableColor || '#f97316') !== btnDisableColor ||
-    (u.buttonDisableTextColor || '#ffffff') !== btnDisableTextColor ||
-    (u.backgroundColor || '#bae6fd') !== bgColor ||
-    logoChanged ||
-    (canEditCraColors && selectedSocId != null &&
-      (leaveDayColor !== savedLeaveDayColor || weekendColor !== savedWeekendColor ||
-        vatRate !== savedVatRate))
-
   async function handleLanguageChange(value: string) {
     setLanguageSaving(true)
     setLanguageSaved(false)
@@ -337,6 +319,108 @@ export function Settings() {
     }
   }
 
+  function applyAppearanceConfig(config: Record<string, string>) {
+    const number = (key: string, fallback: number) => {
+      const value = Number(config[key])
+      return Number.isFinite(value) && value > 0 ? value : fallback
+    }
+    setSize(number('fontSize', 14))
+    setTheme(config.theme || 'ocean')
+    setBgColor(config.backgroundColor || '#bae6fd')
+    setPageSize(number('pageSize', 5))
+    setHeaderColor(config.tableHeaderColor || '#1d48eb')
+    setHeaderTextColor(config.tableHeaderTextColor || '#ffffff')
+    setBorderColor(config.tableBorderColor || '#000000')
+    setTableHeaderFontSize(number('tableHeaderFontSize', 15))
+    setFormHeaderBg(config.formHeaderBackgroundColor || '#0ea5e9')
+    setFormHeaderText(config.formHeaderTextColor || '#ffffff')
+    setFormHeaderFontSize(number('formHeaderFontSize', 15))
+    setFormLabelText(config.formLabelTextColor || '#0ea5e9')
+    setFormLabelFontSize(number('formLabelFontSize', 12))
+    setBtnSmallWidth(number('buttonSmallWidth', 50))
+    setBtnLargeWidth(number('buttonLargeWidth', 100))
+    setBtnSaveColor(config.buttonSaveColor || '#1d48eb')
+    setBtnDeleteColor(config.buttonDeleteColor || '#dc2626')
+    setBtnCancelColor(config.buttonCancelColor || '#ffffff')
+    setBtnCancelTextColor(config.buttonCancelTextColor || '#374151')
+    setBtnSubmitColor(config.buttonSubmitColor || '#e0e7ff')
+    setBtnSubmitTextColor(config.buttonSubmitTextColor || '#1d48eb')
+    setBtnHistoryColor(config.buttonHistoryColor || '#e0e7ff')
+    setBtnHistoryTextColor(config.buttonHistoryTextColor || '#1d48eb')
+    setBtnOkColor(config.buttonOkColor || '#16a34a')
+    setBtnOkTextColor(config.buttonOkTextColor || '#ffffff')
+    setBtnNewColor(config.buttonNewColor || '#0ea5e9')
+    setBtnNewTextColor(config.buttonNewTextColor || '#ffffff')
+    setBtnDisableColor(config.buttonDisableColor || '#f97316')
+    setBtnDisableTextColor(config.buttonDisableTextColor || '#ffffff')
+  }
+
+  function buildAppearanceConfig(): Record<string, string> {
+    return {
+      fontSize: String(size),
+      theme,
+      backgroundColor: bgColor,
+      tableHeaderColor: headerColor,
+      tableHeaderTextColor: headerTextColor,
+      tableBorderColor: borderColor,
+      tableHeaderFontSize: String(tableHeaderFontSize),
+      formHeaderBackgroundColor: formHeaderBg,
+      formHeaderTextColor: formHeaderText,
+      formHeaderFontSize: String(formHeaderFontSize),
+      formLabelTextColor: formLabelText,
+      formLabelFontSize: String(formLabelFontSize),
+      pageSize: String(pageSize),
+      buttonSmallWidth: String(btnSmallWidth),
+      buttonLargeWidth: String(btnLargeWidth),
+      buttonSaveColor: btnSaveColor,
+      buttonDeleteColor: btnDeleteColor,
+      buttonCancelColor: btnCancelColor,
+      buttonCancelTextColor: btnCancelTextColor,
+      buttonSubmitColor: btnSubmitColor,
+      buttonSubmitTextColor: btnSubmitTextColor,
+      buttonHistoryColor: btnHistoryColor,
+      buttonHistoryTextColor: btnHistoryTextColor,
+      buttonOkColor: btnOkColor,
+      buttonOkTextColor: btnOkTextColor,
+      buttonNewColor: btnNewColor,
+      buttonNewTextColor: btnNewTextColor,
+      buttonDisableColor: btnDisableColor,
+      buttonDisableTextColor: btnDisableTextColor,
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    if (!user) return
+    appearanceApi
+      .effective()
+      .then((eff) => {
+        // Ne pas écraser une saisie déjà commencée (évite d'avoir à ressaisir une valeur).
+        if (cancelled || dirtyRef.current) return
+        // N'applique la configuration qu'une fois pour un couple utilisateur/société afin qu'une
+        // ré-exécution de l'effet ne réinitialise pas la valeur choisie.
+        const key = `${user.id}-${selectedSocId ?? 'none'}`
+        if (appliedAppearanceKeyRef.current === key) return
+        appliedAppearanceKeyRef.current = key
+        applyAppearanceConfig(eff.config)
+        applyAppearance(eff)
+      })
+      .catch(() => {
+        // Apparence optionnelle : on conserve les valeurs par défaut en cas d'erreur.
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.id, user?.socId, user?.role, selectedSocId])
+
+  /** Marque les paramètres comme modifiés : active le bouton Enregistrer. */
+  function markDirty() {
+    dirtyRef.current = true
+    setDirty(true)
+    setSaved(false)
+  }
+
   async function handleSave() {
     const vatValue = Number(vatRate)
     if (canEditCraColors && selectedSocId != null &&
@@ -346,7 +430,7 @@ export function Settings() {
     }
     setSaving(true)
     setError(null)
-    setSaved(false)
+    markDirty()
     try {
       if (size !== (u.fontSize ?? 14)) {
         await authApi.updateFontSize(size)
@@ -427,8 +511,41 @@ export function Settings() {
         setSavedVatRate(vatRate)
         await refreshSocs()
       }
+      // Le bouton Enregistrer des paramètres enregistre aussi l'apparence (niveau du rôle).
+      if (activeTab === 'appearance') {
+        await appearanceApi.save(appearanceScope, buildAppearanceConfig())
+        const eff = await appearanceApi.effective()
+        applyAppearance(eff)
+        applyAppearanceConfig(eff.config)
+      }
       await refreshMe()
       setLogoChanged(false)
+      dirtyRef.current = false
+      setDirty(false)
+      setSaved(true)
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : tr('common.unexpectedError'))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  /** Restaure l'apparence de SOC360 (valeurs par défaut) après confirmation. */
+  async function handleRestoreAppearance() {
+    const message = user?.role === 'RESPONSIBLE_SOC'
+      ? "Restaurer le paramétrage SOC360 ? Les paramètres SOC360 seront copiés vers votre société."
+      : "Restaurer le paramétrage de ma société ? Les paramètres de votre société seront copiés vers votre compte."
+    if (!(await dialog.confirm(message, { variant: 'warning', danger: true, okLabel: 'Restaurer' }))) {
+      return
+    }
+    setSaving(true)
+    setError(null)
+    try {
+      const eff = await appearanceApi.restore()
+      applyAppearance(eff)
+      applyAppearanceConfig(eff.config)
+      dirtyRef.current = false
+      setDirty(false)
       setSaved(true)
     } catch (err) {
       setError(err instanceof ApiError ? err.message : tr('common.unexpectedError'))
@@ -549,7 +666,7 @@ export function Settings() {
                   : 'text-gray-600 hover:bg-gray-100'
               }`}
             >
-              {t(tab.labelKey)}
+              {tab.label ?? t(tab.labelKey)}
             </button>
           ))}
         </div>
@@ -670,6 +787,33 @@ export function Settings() {
         )}
 
         <TabPanel active={activeTab === 'appearance'}>
+        <div id="settings.appearance.tabs" role="tablist" className="mb-4 flex flex-wrap gap-2 border-b border-gray-200 pb-2">
+          {[
+            { id: 'application', label: 'Application' },
+            { id: 'buttons', label: 'Boutons' },
+            { id: 'forms', label: 'Formulaires' },
+            { id: 'tables', label: 'Tableaux' },
+          ].map((sub) => (
+            <button
+              key={sub.id}
+              type="button"
+              role="tab"
+              id={`settings.appearance.tab.${sub.id}`}
+              aria-selected={appearanceTab === sub.id}
+              onClick={() => setAppearanceTab(sub.id as typeof appearanceTab)}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+                appearanceTab === sub.id
+                  ? 'bg-brand-600 text-white'
+                  : 'text-gray-600 hover:bg-gray-100'
+              }`}
+            >
+              {sub.label}
+            </button>
+          ))}
+        </div>
+
+        {appearanceTab === 'application' && (
+        <>
         <h3 className="text-sm font-semibold text-gray-900" id="settings.fontSize.title">{t('settings.fontSize.title')}</h3>
         <p className="mt-1 text-sm text-gray-500" id="settings.fontSize.description">{t('settings.fontSize.description')}</p>
         <div className="mt-4 flex flex-wrap items-end gap-4">
@@ -680,7 +824,7 @@ export function Settings() {
               value={String(size)}
               onChange={(e) => {
                 setSize(Number(e.target.value))
-                setSaved(false)
+                markDirty()
               }}
             >
               {FONT_SIZES.map((s) => (
@@ -699,13 +843,18 @@ export function Settings() {
           </div>
         </div>
 
+        </>
+        )}
+
+        {appearanceTab === 'forms' && (
+        <>
         <h3 className="mt-8 text-sm font-semibold text-gray-900" id="settings.forms.title">{t('settings.forms.title')}</h3>
         <p className="mt-1 text-sm text-gray-500" id="settings.forms.description">{t('settings.forms.description')}</p>
         <div className="mt-4 flex flex-wrap items-end gap-6">
           <Field label={t('settings.forms.headerBg')} id="settings.forms.headerBg">
             <div className="flex items-center gap-2">
               <input type="color" id="settings.forms.headerBg.input" value={formHeaderBg}
-                onChange={(e) => { setFormHeaderBg(e.target.value); setSaved(false) }}
+                onChange={(e) => { setFormHeaderBg(e.target.value); markDirty() }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1" />
               <span className="text-sm text-gray-500" id="settings.forms.headerBg.value">{formHeaderBg}</span>
             </div>
@@ -713,14 +862,14 @@ export function Settings() {
           <Field label={t('settings.forms.headerText')} id="settings.forms.headerText">
             <div className="flex items-center gap-2">
               <input type="color" id="settings.forms.headerText.input" value={formHeaderText}
-                onChange={(e) => { setFormHeaderText(e.target.value); setSaved(false) }}
+                onChange={(e) => { setFormHeaderText(e.target.value); markDirty() }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1" />
               <span className="text-sm text-gray-500" id="settings.forms.headerText.value">{formHeaderText}</span>
             </div>
           </Field>
           <Field label={t('settings.forms.headerFontSize')} id="settings.forms.headerFontSize">
             <Select id="settings.forms.headerFontSize.select" className="w-28" value={String(formHeaderFontSize)}
-              onChange={(e) => { setFormHeaderFontSize(Number(e.target.value)); setSaved(false) }}>
+              onChange={(e) => { setFormHeaderFontSize(Number(e.target.value)); markDirty() }}>
               {FONT_SIZES.map((s) => (
                 <option key={s} value={s} id={`settings.forms.headerFontSize.option.${s}`}>{s} {tr('Settings.px')}</option>
               ))}
@@ -729,14 +878,14 @@ export function Settings() {
           <Field label={t('settings.forms.labelText')} id="settings.forms.labelText">
             <div className="flex items-center gap-2">
               <input type="color" id="settings.forms.labelText.input" value={formLabelText}
-                onChange={(e) => { setFormLabelText(e.target.value); setSaved(false) }}
+                onChange={(e) => { setFormLabelText(e.target.value); markDirty() }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1" />
               <span className="text-sm text-gray-500" id="settings.forms.labelText.value">{formLabelText}</span>
             </div>
           </Field>
           <Field label={t('settings.forms.labelFontSize')} id="settings.forms.labelFontSize">
             <Select id="settings.forms.labelFontSize.select" className="w-28" value={String(formLabelFontSize)}
-              onChange={(e) => { setFormLabelFontSize(Number(e.target.value)); setSaved(false) }}>
+              onChange={(e) => { setFormLabelFontSize(Number(e.target.value)); markDirty() }}>
               {FONT_SIZES.map((s) => (
                 <option key={s} value={s} id={`settings.forms.labelFontSize.option.${s}`}>{s} {tr('Settings.px')}</option>
               ))}
@@ -744,6 +893,11 @@ export function Settings() {
           </Field>
         </div>
 
+        </>
+        )}
+
+        {appearanceTab === 'application' && (
+        <>
         <h3 className="mt-8 text-sm font-semibold text-gray-900" id="settings.theme.title">{t('settings.theme.title')}</h3>
         <p className="mt-1 text-sm text-gray-500" id="settings.theme.description">{t('settings.theme.description')}</p>
         <div className="mt-4 flex flex-wrap items-end gap-4">
@@ -754,7 +908,7 @@ export function Settings() {
               value={theme}
               onChange={(e) => {
                 setTheme(e.target.value)
-                setSaved(false)
+                markDirty()
               }}
             >
               {THEMES.map((th) => (
@@ -782,123 +936,142 @@ export function Settings() {
           {t('settings.theme.preview')}
         </div>
 
-        <h3 className="mt-8 text-sm font-semibold text-gray-900" id="settings.pageSize.title">{t('settings.pageSize.title')}</h3>
-        <p className="mt-1 text-sm text-gray-500" id="settings.pageSize.description">{t('settings.pageSize.description')}</p>
-        <div className="mt-4 flex flex-wrap items-end gap-4">
-          <Field label={t('settings.pageSize.field')} id="settings.pageSize.field">
-            <Select
-              id="settings.pageSize.field.select"
-              className="w-28"
-              value={String(pageSize)}
-              onChange={(e) => {
-                setPageSize(Number(e.target.value))
-                setSaved(false)
-              }}
-            >
-              {[5, 10, 15, 20, 50, 100].map((n) => (
-                <option key={n} value={n} id={`settings.pageSize.option.${n}`}>
-                  {n}
-                </option>
-              ))}
-            </Select>
-          </Field>
+        </>
+        )}
+
+        {appearanceTab === 'tables' && (
+        <>
+        <div className="mt-8 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <Card id="settings.tables.pageSize.card" className="min-h-[180px] p-4">
+            <h3 className="text-sm font-semibold text-gray-900" id="settings.pageSize.title">{t('settings.pageSize.title')}</h3>
+            <p className="mt-1 text-sm text-gray-500" id="settings.pageSize.description">{t('settings.pageSize.description')}</p>
+            <div className="mt-3">
+              <Field label={t('settings.pageSize.field')} id="settings.pageSize.field">
+                <Select
+                  id="settings.pageSize.field.select"
+                  className="w-28"
+                  value={String(pageSize)}
+                  onChange={(e) => {
+                    setPageSize(Number(e.target.value))
+                    markDirty()
+                  }}
+                >
+                  {[5, 10, 15, 20, 50, 100].map((n) => (
+                    <option key={n} value={n} id={`settings.pageSize.option.${n}`}>
+                      {n}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+          </Card>
+
+          <Card id="settings.tables.colors.card" className="min-h-[180px] p-4">
+            <h3 className="text-sm font-semibold text-gray-900" id="settings.colors.title">{t('settings.colors.title')}</h3>
+            <p className="mt-1 text-sm text-gray-500" id="settings.colors.description">{t('settings.colors.description')}</p>
+            <div className="mt-3 flex flex-wrap items-end gap-4">
+              <Field label={t('settings.colors.header')} id="settings.colors.header">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    id="settings.colors.header.input"
+                    value={headerColor}
+                    onChange={(e) => {
+                      setHeaderColor(e.target.value)
+                      markDirty()
+                    }}
+                    className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
+                  />
+                  <span className="text-sm text-gray-500" id="settings.colors.header.value">{headerColor}</span>
+                </div>
+              </Field>
+              <Field label={t('settings.colors.headerText')} id="settings.colors.headerText">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    id="settings.colors.headerText.input"
+                    value={headerTextColor}
+                    onChange={(e) => {
+                      setHeaderTextColor(e.target.value)
+                      markDirty()
+                    }}
+                    className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
+                  />
+                  <span className="text-sm text-gray-500" id="settings.colors.headerText.value">{headerTextColor}</span>
+                </div>
+              </Field>
+              <Field label={t('settings.colors.border')} id="settings.colors.border">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="color"
+                    id="settings.colors.border.input"
+                    value={borderColor}
+                    onChange={(e) => {
+                      setBorderColor(e.target.value)
+                      markDirty()
+                    }}
+                    className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
+                  />
+                  <span className="text-sm text-gray-500" id="settings.colors.border.value">{borderColor}</span>
+                </div>
+              </Field>
+            </div>
+          </Card>
+
+          <Card id="settings.tables.header.card" className="min-h-[180px] p-4">
+            <h3 className="text-sm font-semibold text-gray-900" id="settings.tableHeaderFontSize.title">{t('settings.tableHeaderFontSize.title')}</h3>
+            <p className="mt-1 text-sm text-gray-500" id="settings.tableHeaderFontSize.description">{t('settings.tableHeaderFontSize.description')}</p>
+            <div className="mt-3">
+              <Field label={t('settings.tableHeaderFontSize.field')} id="settings.tableHeaderFontSize.field">
+                <Select
+                  id="settings.tableHeaderFontSize.select"
+                  className="w-28"
+                  value={String(tableHeaderFontSize)}
+                  onChange={(e) => {
+                    setTableHeaderFontSize(Number(e.target.value))
+                    markDirty()
+                  }}
+                >
+                  {FONT_SIZES.map((s) => (
+                    <option key={s} value={s} id={`settings.tableHeaderFontSize.option.${s}`}>
+                      {s} {tr('Settings.px')}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            </div>
+          </Card>
         </div>
 
-        <h3 className="mt-8 text-sm font-semibold text-gray-900" id="settings.colors.title">{t('settings.colors.title')}</h3>
-        <p className="mt-1 text-sm text-gray-500" id="settings.colors.description">{t('settings.colors.description')}</p>
-        <div className="mt-4 flex flex-wrap items-end gap-6">
-          <Field label={t('settings.colors.header')} id="settings.colors.header">
-            <div className="flex items-center gap-2">
-              <input
-                type="color"
-                id="settings.colors.header.input"
-                value={headerColor}
-                onChange={(e) => {
-                  setHeaderColor(e.target.value)
-                  setSaved(false)
-                }}
-                className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
-              />
-              <span className="text-sm text-gray-500" id="settings.colors.header.value">{headerColor}</span>
-            </div>
-          </Field>
-          <Field label={t('settings.colors.headerText')} id="settings.colors.headerText">
-            <div className="flex items-center gap-2">
-              <input
-                type="color"
-                id="settings.colors.headerText.input"
-                value={headerTextColor}
-                onChange={(e) => {
-                  setHeaderTextColor(e.target.value)
-                  setSaved(false)
-                }}
-                className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
-              />
-              <span className="text-sm text-gray-500" id="settings.colors.headerText.value">{headerTextColor}</span>
-            </div>
-          </Field>
-          <Field label={t('settings.colors.border')} id="settings.colors.border">
-            <div className="flex items-center gap-2">
-              <input
-                type="color"
-                id="settings.colors.border.input"
-                value={borderColor}
-                onChange={(e) => {
-                  setBorderColor(e.target.value)
-                  setSaved(false)
-                }}
-                className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
-              />
-              <span className="text-sm text-gray-500" id="settings.colors.border.value">{borderColor}</span>
-            </div>
-          </Field>
-        </div>
-        <h3 className="mt-8 text-sm font-semibold text-gray-900" id="settings.tableHeaderFontSize.title">{t('settings.tableHeaderFontSize.title')}</h3>
-        <p className="mt-1 text-sm text-gray-500" id="settings.tableHeaderFontSize.description">{t('settings.tableHeaderFontSize.description')}</p>
-        <div className="mt-4 flex flex-wrap items-end gap-4">
-          <Field label={t('settings.tableHeaderFontSize.field')} id="settings.tableHeaderFontSize.field">
-            <Select
-              id="settings.tableHeaderFontSize.select"
-              className="w-28"
-              value={String(tableHeaderFontSize)}
-              onChange={(e) => {
-                setTableHeaderFontSize(Number(e.target.value))
-                setSaved(false)
-              }}
-            >
-              {FONT_SIZES.map((s) => (
-                <option key={s} value={s} id={`settings.tableHeaderFontSize.option.${s}`}>
-                  {s} {tr('Settings.px')}
-                </option>
-              ))}
-            </Select>
-          </Field>
-        </div>
-
-        <div className="mt-4 overflow-hidden rounded-xl border" style={{ borderColor: borderColor }}>
-          <table className="min-w-full divide-y" style={{ borderColor: borderColor }} id="settings.colors.preview.table">
-            <thead style={{ backgroundColor: headerColor }}>
-              <tr>
-                <th className="px-4 py-2 text-left text-xs font-bold uppercase tracking-wide" style={{ color: headerTextColor }} id="settings.example">
-                  {t('settings.example')}
-                </th>
-                <th className="px-4 py-2 text-left text-xs font-bold uppercase tracking-wide" style={{ color: headerTextColor }} id="settings.preview">
-                  {t('settings.preview')}
-                </th>
-              </tr>
-            </thead>
-            <tbody className="divide-y bg-white">
-              <tr>
-                <td className="px-4 py-2 text-sm text-gray-700" id="settings.row.1">{t('settings.row')} 1</td>
-                <td className="px-4 py-2 text-sm text-gray-700" id="settings.content.1">{t('settings.content')}</td>
-              </tr>
-              <tr className="even:bg-gray-50">
-                <td className="px-4 py-2 text-sm text-gray-700" id="settings.row.2">{t('settings.row')} 2</td>
-                <td className="px-4 py-2 text-sm text-gray-700" id="settings.content.2">{t('settings.content')}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
+        <Card id="settings.tables.preview.card" className="mt-4 p-4">
+          <h3 className="mb-2 text-sm font-semibold text-gray-900" id="settings.tables.preview.title">{t('settings.preview')}</h3>
+          <div className="overflow-hidden rounded-xl border" style={{ borderColor: borderColor }}>
+            <table className="min-w-full divide-y" style={{ borderColor: borderColor }} id="settings.colors.preview.table">
+              <thead style={{ backgroundColor: headerColor }}>
+                <tr>
+                  <th className="px-4 py-2 text-left text-xs font-bold uppercase tracking-wide" style={{ color: headerTextColor }} id="settings.example">
+                    {t('settings.example')}
+                  </th>
+                  <th className="px-4 py-2 text-left text-xs font-bold uppercase tracking-wide" style={{ color: headerTextColor }} id="settings.preview">
+                    {t('settings.preview')}
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y bg-white">
+                <tr>
+                  <td className="px-4 py-2 text-sm text-gray-700" id="settings.row.1">{t('settings.row')} 1</td>
+                  <td className="px-4 py-2 text-sm text-gray-700" id="settings.content.1">{t('settings.content')}</td>
+                </tr>
+                <tr className="even:bg-gray-50">
+                  <td className="px-4 py-2 text-sm text-gray-700" id="settings.row.2">{t('settings.row')} 2</td>
+                  <td className="px-4 py-2 text-sm text-gray-700" id="settings.content.2">{t('settings.content')}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </Card>
+        </>
+        )}
         </TabPanel>
 
         <TabPanel active={activeTab === 'company'}>
@@ -911,6 +1084,7 @@ export function Settings() {
               onChange={(saved) => {
                 setSocHasLogo(saved.hasLogo ?? false)
                 setLogoChanged(true)
+                markDirty()
                 void refreshSocs()
               }}
             />
@@ -932,7 +1106,7 @@ export function Settings() {
                     value={leaveDayColor}
                     onChange={(e) => {
                       setLeaveDayColor(e.target.value)
-                      setSaved(false)
+                      markDirty()
                     }}
                     className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
                   />
@@ -947,7 +1121,7 @@ export function Settings() {
                     value={weekendColor}
                     onChange={(e) => {
                       setWeekendColor(e.target.value)
-                      setSaved(false)
+                      markDirty()
                     }}
                     className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
                   />
@@ -978,7 +1152,7 @@ export function Settings() {
                   value={vatRate}
                   onChange={(e) => {
                     setVatRate(e.target.value)
-                    setSaved(false)
+                    markDirty()
                   }}
                 />
               </Field>
@@ -990,7 +1164,7 @@ export function Settings() {
         )}
         </TabPanel>
 
-        <TabPanel active={activeTab === 'buttons'}>
+        <TabPanel active={activeTab === 'appearance' && appearanceTab === 'buttons'}>
         <h3 className="text-sm font-semibold text-gray-900" id="settings.buttons.title">{t('settings.buttons.title')}</h3>
         <p className="mt-1 text-sm text-gray-500" id="settings.buttons.description">{t('settings.buttons.description')}</p>
         <div className="mt-4 flex flex-wrap items-end gap-6">
@@ -1004,7 +1178,7 @@ export function Settings() {
               value={btnSmallWidth}
               onChange={(e) => {
                 setBtnSmallWidth(Number(e.target.value) || 0)
-                setSaved(false)
+                markDirty()
               }}
             />
           </Field>
@@ -1018,7 +1192,7 @@ export function Settings() {
               value={btnLargeWidth}
               onChange={(e) => {
                 setBtnLargeWidth(Number(e.target.value) || 0)
-                setSaved(false)
+                markDirty()
               }}
             />
           </Field>
@@ -1030,7 +1204,7 @@ export function Settings() {
                 value={btnSaveColor}
                 onChange={(e) => {
                   setBtnSaveColor(e.target.value)
-                  setSaved(false)
+                  markDirty()
                 }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
               />
@@ -1045,7 +1219,7 @@ export function Settings() {
                 value={btnDeleteColor}
                 onChange={(e) => {
                   setBtnDeleteColor(e.target.value)
-                  setSaved(false)
+                  markDirty()
                 }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
               />
@@ -1060,7 +1234,7 @@ export function Settings() {
                 value={btnDisableColor}
                 onChange={(e) => {
                   setBtnDisableColor(e.target.value)
-                  setSaved(false)
+                  markDirty()
                 }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
               />
@@ -1075,7 +1249,7 @@ export function Settings() {
                 value={btnDisableTextColor}
                 onChange={(e) => {
                   setBtnDisableTextColor(e.target.value)
-                  setSaved(false)
+                  markDirty()
                 }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
               />
@@ -1090,7 +1264,7 @@ export function Settings() {
                 value={btnCancelColor}
                 onChange={(e) => {
                   setBtnCancelColor(e.target.value)
-                  setSaved(false)
+                  markDirty()
                 }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
               />
@@ -1105,7 +1279,7 @@ export function Settings() {
                 value={btnCancelTextColor}
                 onChange={(e) => {
                   setBtnCancelTextColor(e.target.value)
-                  setSaved(false)
+                  markDirty()
                 }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
               />
@@ -1120,7 +1294,7 @@ export function Settings() {
                 value={btnSubmitColor}
                 onChange={(e) => {
                   setBtnSubmitColor(e.target.value)
-                  setSaved(false)
+                  markDirty()
                 }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
               />
@@ -1135,7 +1309,7 @@ export function Settings() {
                 value={btnSubmitTextColor}
                 onChange={(e) => {
                   setBtnSubmitTextColor(e.target.value)
-                  setSaved(false)
+                  markDirty()
                 }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
               />
@@ -1150,7 +1324,7 @@ export function Settings() {
                 value={btnHistoryColor}
                 onChange={(e) => {
                   setBtnHistoryColor(e.target.value)
-                  setSaved(false)
+                  markDirty()
                 }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
               />
@@ -1165,7 +1339,7 @@ export function Settings() {
                 value={btnHistoryTextColor}
                 onChange={(e) => {
                   setBtnHistoryTextColor(e.target.value)
-                  setSaved(false)
+                  markDirty()
                 }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
               />
@@ -1180,7 +1354,7 @@ export function Settings() {
                 value={btnNewColor}
                 onChange={(e) => {
                   setBtnNewColor(e.target.value)
-                  setSaved(false)
+                  markDirty()
                 }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
               />
@@ -1195,7 +1369,7 @@ export function Settings() {
                 value={btnNewTextColor}
                 onChange={(e) => {
                   setBtnNewTextColor(e.target.value)
-                  setSaved(false)
+                  markDirty()
                 }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
               />
@@ -1210,7 +1384,7 @@ export function Settings() {
                 value={btnOkColor}
                 onChange={(e) => {
                   setBtnOkColor(e.target.value)
-                  setSaved(false)
+                  markDirty()
                 }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
               />
@@ -1225,7 +1399,7 @@ export function Settings() {
                 value={btnOkTextColor}
                 onChange={(e) => {
                   setBtnOkTextColor(e.target.value)
-                  setSaved(false)
+                  markDirty()
                 }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
               />
@@ -1312,7 +1486,7 @@ export function Settings() {
         </div>
         </TabPanel>
 
-        <TabPanel active={activeTab === 'appearance'}>
+        <TabPanel active={activeTab === 'appearance' && appearanceTab === 'application'}>
         <h3 className="mt-8 text-sm font-semibold text-gray-900" id="settings.background.title">{t('settings.background.title')}</h3>
         <p className="mt-1 text-sm text-gray-500" id="settings.background.description">{t('settings.background.description')}</p>
         <div className="mt-4 flex flex-wrap items-end gap-4">
@@ -1324,7 +1498,7 @@ export function Settings() {
                 value={bgColor}
                 onChange={(e) => {
                   setBgColor(e.target.value)
-                  setSaved(false)
+                  markDirty()
                 }}
                 className="h-9 w-12 cursor-pointer rounded border border-gray-300 bg-white p-1"
               />
@@ -1406,19 +1580,34 @@ export function Settings() {
           </div>
         )}
         </div>
+      </Card>
 
-        <Button
-          id="common.save.button"
-          className="mt-6 w-auto"
-          onClick={() => void handleSave()}
-          disabled={saving || !changed}
-        >
-          {saving ? <Spinner className="border-white border-t-transparent" /> : null}
-          {t('common.save')}
-        </Button>
+      <div id="settings.actions" className="mt-4 w-[90%] pl-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            id="common.save.button"
+            className="w-auto"
+            onClick={() => void handleSave()}
+            disabled={saving || !dirty}
+          >
+            {saving ? <Spinner className="border-white border-t-transparent" /> : null}
+            {t('common.save')}
+          </Button>
+          {activeTab === 'appearance' && user?.role !== 'ADMIN' && (
+            <Button
+              id="settings.appearance.restore"
+              className="w-auto"
+              variant="neutral"
+              onClick={() => void handleRestoreAppearance()}
+              disabled={saving}
+            >
+              {appearanceRestoreLabel}
+            </Button>
+          )}
+        </div>
         {error && <p className="mt-3 text-sm text-red-600" id="settings.error">{error}</p>}
         {saved && <p className="mt-3 text-sm text-green-600" id="settings.saved">{t('settings.saved')}</p>}
-      </Card>
+      </div>
     </div>
   )
 }
